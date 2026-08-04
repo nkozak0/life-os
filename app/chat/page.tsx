@@ -3,6 +3,7 @@
 import {
   type FormEvent,
   type KeyboardEvent,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -12,8 +13,11 @@ import {
   CircleAlert,
   LoaderCircle,
   Send,
+  Settings,
   Sparkles,
 } from "lucide-react";
+
+import SettingsModal from "@/components/SettingsModal";
 
 type ChatMessage = {
   id: string;
@@ -47,7 +51,11 @@ export default function ChatPage() {
   const [draft, setDraft] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const scrollAnchorRef = useRef<HTMLDivElement>(null);
+  const requestControllerRef = useRef<AbortController | null>(
+    null,
+  );
 
   useEffect(() => {
     scrollAnchorRef.current?.scrollIntoView({
@@ -55,6 +63,26 @@ export default function ChatPage() {
       block: "end",
     });
   }, [isSending, messages]);
+
+  useEffect(
+    () => () => {
+      requestControllerRef.current?.abort();
+    },
+    [],
+  );
+
+  const closeSettings = useCallback(() => {
+    setIsSettingsOpen(false);
+  }, []);
+
+  const clearLocalChatHistory = useCallback(() => {
+    requestControllerRef.current?.abort();
+    requestControllerRef.current = null;
+    setMessages([...initialMessages]);
+    setDraft("");
+    setError(null);
+    setIsSending(false);
+  }, []);
 
   const sendMessage = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -75,6 +103,9 @@ export default function ChatPage() {
     setDraft("");
     setError(null);
     setIsSending(true);
+    const controller = new AbortController();
+    requestControllerRef.current?.abort();
+    requestControllerRef.current = controller;
 
     try {
       const response = await fetch("/api/chat", {
@@ -88,6 +119,7 @@ export default function ChatPage() {
             content: text,
           })),
         }),
+        signal: controller.signal,
       });
       const result = (await response.json().catch(() => ({}))) as {
         message?: string;
@@ -109,13 +141,23 @@ export default function ChatPage() {
         },
       ]);
     } catch (requestError) {
+      if (
+        requestError instanceof DOMException &&
+        requestError.name === "AbortError"
+      ) {
+        return;
+      }
+
       setError(
         requestError instanceof Error
           ? requestError.message
           : "The assistant could not respond.",
       );
     } finally {
-      setIsSending(false);
+      if (requestControllerRef.current === controller) {
+        requestControllerRef.current = null;
+        setIsSending(false);
+      }
     }
   };
 
@@ -133,7 +175,8 @@ export default function ChatPage() {
   };
 
   return (
-    <section className="mx-auto flex min-h-[calc(100dvh-10rem)] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-white/[0.045] shadow-2xl shadow-black/30 backdrop-blur-2xl lg:min-h-[calc(100dvh-6rem)]">
+    <>
+      <section className="mx-auto flex min-h-[calc(100dvh-10rem)] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-white/[0.045] shadow-2xl shadow-black/30 backdrop-blur-2xl lg:min-h-[calc(100dvh-6rem)]">
       <header className="flex items-center justify-between gap-4 border-b border-white/10 bg-black/10 px-4 py-4 backdrop-blur-xl sm:px-5">
         <div className="flex min-w-0 items-center gap-3">
           <span className="relative grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-violet-300/20 bg-violet-300/10 text-violet-200">
@@ -152,9 +195,20 @@ export default function ChatPage() {
             </p>
           </div>
         </div>
-        <span className="rounded-full border border-emerald-300/15 bg-emerald-300/[0.07] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-emerald-200/70">
-          online
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="hidden rounded-full border border-emerald-300/15 bg-emerald-300/[0.07] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-emerald-200/70 sm:inline-flex">
+            online
+          </span>
+          <button
+            type="button"
+            onClick={() => setIsSettingsOpen(true)}
+            aria-label="Open agent settings"
+            aria-haspopup="dialog"
+            className="grid h-11 w-11 place-items-center rounded-xl border border-white/10 bg-white/5 text-white/50 transition hover:border-white/15 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/60"
+          >
+            <Settings className="h-[18px] w-[18px]" />
+          </button>
+        </div>
       </header>
 
       <div
@@ -289,6 +343,13 @@ export default function ChatPage() {
           enter to send · shift + enter for a new line
         </p>
       </div>
-    </section>
+      </section>
+
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={closeSettings}
+        onHistoryCleared={clearLocalChatHistory}
+      />
+    </>
   );
 }
