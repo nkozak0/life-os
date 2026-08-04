@@ -7,6 +7,7 @@ const protectedRoutes = [
   "/workouts",
   "/analytics",
   "/chat",
+  "/settings",
 ];
 
 function isProtectedPath(pathname: string) {

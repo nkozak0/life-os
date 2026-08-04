@@ -624,6 +624,50 @@ export default function CalendarPage() {
   );
   const knownCalendarsRef = useRef<Set<string>>(new Set());
 
+  useEffect(() => {
+    const controller = new AbortController();
+
+    void fetch("/api/settings", {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          return null;
+        }
+
+        return (await response.json()) as {
+          settings?: {
+            default_calendar_view?: CalendarView;
+          };
+        };
+      })
+      .then((payload) => {
+        const defaultView =
+          payload?.settings?.default_calendar_view;
+
+        if (
+          !controller.signal.aborted &&
+          defaultView &&
+          VIEW_OPTIONS.includes(defaultView)
+        ) {
+          setView(defaultView);
+        }
+      })
+      .catch((settingsError) => {
+        if (!isAbortError(settingsError)) {
+          console.error(
+            "Default calendar view lookup failed:",
+            settingsError,
+          );
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, []);
+
   const fetchCalendar = useCallback(async (signal?: AbortSignal) => {
     try {
       const response = await fetch("/api/calendar", {

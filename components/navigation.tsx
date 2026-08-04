@@ -8,6 +8,7 @@ import {
   House,
   ListTodo,
   MessageCircle,
+  Settings,
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -26,6 +27,7 @@ const navItems: NavItem[] = [
   { label: "Workouts", href: "/workouts", icon: Dumbbell },
   { label: "Analytics", href: "/analytics", icon: ChartBar },
   { label: "Chat", href: "/chat", icon: MessageCircle },
+  { label: "Settings", href: "/settings", icon: Settings },
 ];
 
 export function Navigation() {
@@ -50,7 +52,7 @@ export function Navigation() {
               href={href}
               aria-label={label}
               aria-current={isActive ? "page" : undefined}
-              className="group relative flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl px-3 py-3 text-neutral-500 outline-none transition-colors hover:text-neutral-100 focus-visible:ring-2 focus-visible:ring-indigo-400/70 lg:h-14 lg:w-14 lg:flex-none lg:px-0"
+              className="group relative flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl px-2 py-3 text-neutral-500 outline-none transition-colors hover:text-neutral-100 focus-visible:ring-2 focus-visible:ring-indigo-400/70 sm:px-3 lg:h-14 lg:w-14 lg:flex-none lg:px-0"
             >
               {isActive && (
                 <motion.span

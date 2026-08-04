@@ -90,6 +90,8 @@ export function WorkoutsClient({
   const [formError, setFormError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
+  const [defaultRestSeconds, setDefaultRestSeconds] =
+    useState(90);
   const [startingRoutineId, setStartingRoutineId] = useState<
     string | null
   >(null);
@@ -99,6 +101,56 @@ export function WorkoutsClient({
   const [openRoutineMenuId, setOpenRoutineMenuId] = useState<
     string | null
   >(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    void fetch("/api/settings", {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          return null;
+        }
+
+        return (await response.json()) as {
+          settings?: {
+            default_rest_seconds?: number;
+          };
+        };
+      })
+      .then((payload) => {
+        const seconds = payload?.settings?.default_rest_seconds;
+
+        if (
+          !controller.signal.aborted &&
+          Number.isInteger(seconds) &&
+          seconds !== undefined &&
+          seconds >= 15 &&
+          seconds <= 900
+        ) {
+          setDefaultRestSeconds(seconds);
+        }
+      })
+      .catch((settingsError) => {
+        if (
+          !(
+            settingsError instanceof DOMException &&
+            settingsError.name === "AbortError"
+          )
+        ) {
+          console.error(
+            "Default rest timer lookup failed:",
+            settingsError,
+          );
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, []);
   const [routineActionId, setRoutineActionId] = useState<
     string | null
   >(null);
@@ -195,6 +247,7 @@ export function WorkoutsClient({
         {
           exercise,
           ...defaultBuilderValues,
+          rest_time_seconds: defaultRestSeconds,
         },
       ];
     });

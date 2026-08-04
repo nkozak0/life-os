@@ -11,6 +11,11 @@ export const metadata: Metadata = {
     template: "%s · Life OS",
   },
   description: "One focused place for coursework, time, and training.",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Life OS",
+  },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
