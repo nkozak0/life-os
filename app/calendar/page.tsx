@@ -43,6 +43,8 @@ import {
   type CSSProperties,
 } from "react";
 
+import { createClient } from "@/lib/supabase/client";
+
 type CalendarView = "day" | "week" | "month";
 
 type EventDateValue =
@@ -72,6 +74,7 @@ type CalendarEvent = {
 type CalendarPayload = {
   events?: CalendarEvent[];
   error?: string;
+  code?: string;
 };
 
 type CalendarOption = {
@@ -85,6 +88,19 @@ const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
 const VIEW_OPTIONS: CalendarView[] = ["day", "week", "month"];
 const FALLBACK_CALENDAR = "Google Calendar";
 const FALLBACK_COLOR = "#818cf8";
+const GOOGLE_CALENDAR_RECONNECT_REQUIRED = "GOOGLE_CALENDAR_RECONNECT_REQUIRED";
+const GOOGLE_CALENDAR_SCOPE =
+  "https://www.googleapis.com/auth/calendar.readonly";
+
+class CalendarRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "CalendarRequestError";
+  }
+}
 
 function isAbortError(error: unknown) {
   return (
@@ -130,9 +146,7 @@ function toDate(value?: string) {
   if (!value) return null;
 
   const date =
-    value.length === 10
-      ? new Date(`${value}T00:00:00`)
-      : new Date(value);
+    value.length === 10 ? new Date(`${value}T00:00:00`) : new Date(value);
 
   return Number.isNaN(date.getTime()) ? null : date;
 }
@@ -467,9 +481,7 @@ function TimeGridView({
             const allDayEvents = events.filter((event) => {
               const eventDate = getEventStartDate(event);
               return (
-                eventDate &&
-                isAllDayEvent(event) &&
-                isSameDay(eventDate, day)
+                eventDate && isAllDayEvent(event) && isSameDay(eventDate, day)
               );
             });
 
@@ -549,10 +561,7 @@ function TimeGridView({
                       Math.min(rawDuration, 24 * 60 - startMinutes),
                     );
                     const top = (startMinutes / 60) * HOUR_HEIGHT;
-                    const height = Math.max(
-                      (duration / 60) * HOUR_HEIGHT,
-                      30,
-                    );
+                    const height = Math.max((duration / 60) * HOUR_HEIGHT, 30);
 
                     return (
                       <motion.div
@@ -617,6 +626,8 @@ export default function CalendarPage() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [requiresGoogleReconnect, setRequiresGoogleReconnect] = useState(false);
+  const [isReconnectingGoogle, setIsReconnectingGoogle] = useState(false);
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const [view, setView] = useState<CalendarView>("month");
   const [activeCalendars, setActiveCalendars] = useState<Set<string>>(
@@ -643,8 +654,7 @@ export default function CalendarPage() {
         };
       })
       .then((payload) => {
-        const defaultView =
-          payload?.settings?.default_calendar_view;
+        const defaultView = payload?.settings?.default_calendar_view;
 
         if (
           !controller.signal.aborted &&
@@ -656,10 +666,7 @@ export default function CalendarPage() {
       })
       .catch((settingsError) => {
         if (!isAbortError(settingsError)) {
-          console.error(
-            "Default calendar view lookup failed:",
-            settingsError,
-          );
+          console.error("Default calendar view lookup failed:", settingsError);
         }
       });
 
@@ -675,22 +682,22 @@ export default function CalendarPage() {
         signal,
       });
       const payload = (await response.json()) as
-        | CalendarPayload
-        | CalendarEvent[];
+        CalendarPayload | CalendarEvent[];
 
       if (!response.ok) {
         const message = Array.isArray(payload)
           ? "Your calendars could not be loaded."
           : payload.error;
 
-        throw new Error(
+        throw new CalendarRequestError(
           message ?? "Your calendars could not be loaded. Please try again.",
+          Array.isArray(payload) ? undefined : payload.code,
         );
       }
 
       const nextEvents = Array.isArray(payload)
         ? payload
-        : payload.events ?? [];
+        : (payload.events ?? []);
 
       return [...nextEvents].sort((left, right) => {
         const leftDate = toDate(getEventStart(left))?.getTime() ?? 0;
@@ -709,27 +716,24 @@ export default function CalendarPage() {
     }
   }, []);
 
-  const syncCalendarFilters = useCallback(
-    (nextEvents: CalendarEvent[]) => {
-      const availableCalendars = new Set(
-        nextEvents.map((event) => getCalendarName(event)),
-      );
-      const newCalendars = [...availableCalendars].filter(
-        (name) => !knownCalendarsRef.current.has(name),
-      );
+  const syncCalendarFilters = useCallback((nextEvents: CalendarEvent[]) => {
+    const availableCalendars = new Set(
+      nextEvents.map((event) => getCalendarName(event)),
+    );
+    const newCalendars = [...availableCalendars].filter(
+      (name) => !knownCalendarsRef.current.has(name),
+    );
 
-      knownCalendarsRef.current = availableCalendars;
+    knownCalendarsRef.current = availableCalendars;
 
-      setActiveCalendars((current) => {
-        const next = new Set(
-          [...current].filter((name) => availableCalendars.has(name)),
-        );
-        newCalendars.forEach((name) => next.add(name));
-        return next;
-      });
-    },
-    [],
-  );
+    setActiveCalendars((current) => {
+      const next = new Set(
+        [...current].filter((name) => availableCalendars.has(name)),
+      );
+      newCalendars.forEach((name) => next.add(name));
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -741,12 +745,17 @@ export default function CalendarPage() {
         setEvents(nextEvents);
         syncCalendarFilters(nextEvents);
         setError(null);
+        setRequiresGoogleReconnect(false);
         setIsLoading(false);
       })
       .catch((fetchError: unknown) => {
         if (controller.signal.aborted || isAbortError(fetchError)) return;
 
         setError(getErrorMessage(fetchError));
+        setRequiresGoogleReconnect(
+          fetchError instanceof CalendarRequestError &&
+            fetchError.code === GOOGLE_CALENDAR_RECONNECT_REQUIRED,
+        );
         setIsLoading(false);
       });
 
@@ -758,6 +767,7 @@ export default function CalendarPage() {
   const refreshCalendar = () => {
     setIsLoading(true);
     setError(null);
+    setRequiresGoogleReconnect(false);
 
     void fetchCalendar()
       .then((nextEvents) => {
@@ -766,14 +776,58 @@ export default function CalendarPage() {
         setEvents(nextEvents);
         syncCalendarFilters(nextEvents);
         setError(null);
+        setRequiresGoogleReconnect(false);
         setIsLoading(false);
       })
       .catch((fetchError: unknown) => {
         if (isAbortError(fetchError)) return;
 
         setError(getErrorMessage(fetchError));
+        setRequiresGoogleReconnect(
+          fetchError instanceof CalendarRequestError &&
+            fetchError.code === GOOGLE_CALENDAR_RECONNECT_REQUIRED,
+        );
         setIsLoading(false);
       });
+  };
+
+  const reconnectGoogleCalendar = async () => {
+    if (isReconnectingGoogle) {
+      return;
+    }
+
+    setIsReconnectingGoogle(true);
+    setError(null);
+
+    try {
+      const callbackUrl = new URL("/auth/callback", window.location.origin);
+      callbackUrl.searchParams.set("next", "/calendar");
+
+      const supabase = createClient();
+      const { error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: callbackUrl.toString(),
+          scopes: GOOGLE_CALENDAR_SCOPE,
+          queryParams: {
+            access_type: "offline",
+            prompt: "consent",
+          },
+        },
+      });
+
+      if (oauthError) {
+        throw oauthError;
+      }
+    } catch (reconnectError) {
+      setError(
+        reconnectError instanceof Error
+          ? reconnectError.message
+          : "Google Calendar could not be reconnected.",
+      );
+      setRequiresGoogleReconnect(true);
+      setIsReconnectingGoogle(false);
+    }
   };
 
   const calendars = useMemo(() => {
@@ -797,10 +851,7 @@ export default function CalendarPage() {
   }, [events]);
 
   const visibleEvents = useMemo(
-    () =>
-      events.filter((event) =>
-        activeCalendars.has(getCalendarName(event)),
-      ),
+    () => events.filter((event) => activeCalendars.has(getCalendarName(event))),
     [activeCalendars, events],
   );
 
@@ -954,10 +1005,7 @@ export default function CalendarPage() {
         </div>
 
         <div className="mt-6 flex items-center gap-3">
-          <CalendarDays
-            aria-hidden="true"
-            className="size-4 text-indigo-300"
-          />
+          <CalendarDays aria-hidden="true" className="size-4 text-indigo-300" />
           <h2 className="text-lg font-medium tracking-[-0.02em] text-neutral-200 sm:text-xl">
             {periodLabel}
           </h2>
@@ -1010,13 +1058,31 @@ export default function CalendarPage() {
                 </p>
                 <motion.button
                   type="button"
-                  onClick={refreshCalendar}
+                  onClick={
+                    requiresGoogleReconnect
+                      ? reconnectGoogleCalendar
+                      : refreshCalendar
+                  }
+                  disabled={isReconnectingGoogle}
                   whileHover={{ y: -2 }}
                   whileTap={{ scale: 0.98 }}
-                  className="mt-6 inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-white backdrop-blur-lg transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/70"
+                  className="mt-6 inline-flex min-h-11 items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-white backdrop-blur-lg transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/70 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  <RefreshCw aria-hidden="true" className="size-4" />
-                  Try again
+                  {requiresGoogleReconnect ? (
+                    <CalendarCheck2
+                      aria-hidden="true"
+                      className={`size-4 ${
+                        isReconnectingGoogle ? "animate-pulse" : ""
+                      }`}
+                    />
+                  ) : (
+                    <RefreshCw aria-hidden="true" className="size-4" />
+                  )}
+                  {requiresGoogleReconnect
+                    ? isReconnectingGoogle
+                      ? "Opening Google…"
+                      : "Reconnect Google Calendar"
+                    : "Try again"}
                 </motion.button>
               </motion.div>
             )}
