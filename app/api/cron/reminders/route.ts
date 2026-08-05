@@ -3,6 +3,8 @@ import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import webpush from "web-push";
 
+import { getKodaBaseSystemPrompt } from "@/lib/ai/koda";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -26,6 +28,7 @@ type PushSubscriptionRow = {
 type CheckinUserRow = {
   user_id: string;
   core_memory: string;
+  accountability_roast_level: string;
   last_ai_checkin: string;
 };
 
@@ -61,8 +64,8 @@ type CheckinHabitRow = {
 
 const reminderBatchSize = 100;
 const proactiveBatchSize = 25;
-const proactiveCheckinPrompt =
-  "You are Koda, the user's proactive life copilot. Based on their memory and recent data, generate a short, highly contextual 1-2 sentence push notification checking in or motivating them.";
+const proactiveNotificationInstruction =
+  "You are currently sending a proactive push notification to the user's lock screen. Do not engage in a full conversation. Deliver a single, punchy, 1-2 sentence message checking in on their pending habits, workouts, or assignments. Maintain your exact persona and current roast level.";
 
 function makeSingleLine(value: string) {
   return value
@@ -207,7 +210,9 @@ export async function GET(request: Request) {
       .limit(reminderBatchSize),
     supabaseAdmin
       .from("user_settings")
-      .select("user_id, core_memory, last_ai_checkin")
+      .select(
+        "user_id, core_memory, accountability_roast_level, last_ai_checkin",
+      )
       .lte("last_ai_checkin", checkinCutoff)
       .order("last_ai_checkin", { ascending: true })
       .limit(proactiveBatchSize),
@@ -439,15 +444,19 @@ export async function GET(request: Request) {
     let notificationBody: string;
 
     try {
+      const basePersona = getKodaBaseSystemPrompt({
+        roastLevel: checkinUser.accountability_roast_level,
+        coreMemory: checkinUser.core_memory,
+      });
       const response = await openai.responses.create({
         model: process.env.OPENAI_MODEL ?? "gpt-5.6",
-        instructions: `${proactiveCheckinPrompt}
+        instructions: `${basePersona}
+
+notification mode:
+${proactiveNotificationInstruction}
 
 Return only the notification body. Keep it under 240 characters, use a single continuous line, and do not use markdown.`,
         input: JSON.stringify({
-          core_memory:
-            checkinUser.core_memory?.trim() ||
-            "No long-term memory has been saved yet.",
           recent_data: recentData,
         }),
         max_output_tokens: 100,
