@@ -67,6 +67,10 @@ $$;
 create index if not exists push_subscriptions_user_id_idx
   on public.push_subscriptions (user_id);
 
+create unique index if not exists
+  push_subscriptions_endpoint_unique_idx
+  on public.push_subscriptions (endpoint);
+
 alter table public.push_subscriptions enable row level security;
 
 revoke all on table public.push_subscriptions from anon;

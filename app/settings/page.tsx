@@ -159,8 +159,8 @@ function ToggleSwitch({
       } disabled:cursor-not-allowed disabled:opacity-40`}
     >
       <span
-        className={`absolute top-1 size-6 rounded-full bg-white shadow-lg transition-transform ${
-          checked ? "translate-x-6" : "translate-x-1"
+        className={`absolute left-1 top-1 size-6 rounded-full bg-white shadow-lg transition-transform ${
+          checked ? "translate-x-6" : "translate-x-0"
         }`}
       />
     </button>
