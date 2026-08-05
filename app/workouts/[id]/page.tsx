@@ -1,11 +1,6 @@
 "use client";
 
-import {
-  type ComponentType,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { type ComponentType, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowRight,
@@ -103,9 +98,23 @@ type WorkoutSummary = {
   personalRecords: PersonalRecord[];
 };
 
-function getExercise(
-  joinedExercise: SessionExercise["exercises"],
-) {
+type RestTimerServiceWorkerMessage =
+  | {
+      type: "START_REST_TIMER";
+      seconds: number;
+      exerciseName: string;
+    }
+  | {
+      type: "CANCEL_REST_TIMER";
+    };
+
+const fallbackRestSeconds = 120;
+
+function getCurrentTimestamp() {
+  return Date.now();
+}
+
+function getExercise(joinedExercise: SessionExercise["exercises"]) {
   return Array.isArray(joinedExercise)
     ? (joinedExercise[0] ?? null)
     : joinedExercise;
@@ -130,9 +139,8 @@ function buildTemplateStructure(
   return exercises.map((exercise, index) => {
     const exerciseKey = getExerciseKey(exercise);
     const targetSets = entries
-      ? Object.keys(entries).filter((key) =>
-          key.startsWith(`${exerciseKey}:`),
-        ).length
+      ? Object.keys(entries).filter((key) => key.startsWith(`${exerciseKey}:`))
+          .length
       : exercise.target_sets;
 
     return {
@@ -196,12 +204,10 @@ export default function LiveWorkoutPage() {
 
   const [workout, setWorkout] = useState<Workout | null>(null);
   const [routine, setRoutine] = useState<Routine | null>(null);
-  const [sessionExercises, setSessionExercises] = useState<
-    SessionExercise[]
-  >([]);
-  const [setEntries, setSetEntries] = useState<
-    Record<string, SetEntry>
-  >({});
+  const [sessionExercises, setSessionExercises] = useState<SessionExercise[]>(
+    [],
+  );
+  const [setEntries, setSetEntries] = useState<Record<string, SetEntry>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [finishError, setFinishError] = useState<string | null>(null);
@@ -209,35 +215,36 @@ export default function LiveWorkoutPage() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [restSeconds, setRestSeconds] = useState<number | null>(null);
-  const [openExerciseMenuKey, setOpenExerciseMenuKey] = useState<
-    string | null
-  >(null);
-  const [exerciseNotes, setExerciseNotes] = useState<
-    Record<string, string>
-  >({});
+  const [restEndsAt, setRestEndsAt] = useState<number | null>(null);
+  const [restExerciseName, setRestExerciseName] = useState<string | null>(null);
+  const [defaultRestSeconds, setDefaultRestSeconds] =
+    useState(fallbackRestSeconds);
+  const [openExerciseMenuKey, setOpenExerciseMenuKey] = useState<string | null>(
+    null,
+  );
+  const [exerciseNotes, setExerciseNotes] = useState<Record<string, string>>(
+    {},
+  );
   const [historicalSets, setHistoricalSets] = useState<
     Record<string, HistoricalSetDisplay>
   >({});
-  const [originalTemplateStructure, setOriginalTemplateStructure] =
-    useState<TemplateStructureItem[]>([]);
-  const [isTemplateSyncOpen, setIsTemplateSyncOpen] =
-    useState(false);
-  const [templateSyncError, setTemplateSyncError] = useState<
-    string | null
-  >(null);
-  const [workoutSummary, setWorkoutSummary] =
-    useState<WorkoutSummary | null>(null);
+  const [originalTemplateStructure, setOriginalTemplateStructure] = useState<
+    TemplateStructureItem[]
+  >([]);
+  const [isTemplateSyncOpen, setIsTemplateSyncOpen] = useState(false);
+  const [templateSyncError, setTemplateSyncError] = useState<string | null>(
+    null,
+  );
+  const [workoutSummary, setWorkoutSummary] = useState<WorkoutSummary | null>(
+    null,
+  );
 
   const currentTemplateStructure = useMemo(
     () => buildTemplateStructure(sessionExercises, setEntries),
     [sessionExercises, setEntries],
   );
   const hasTemplateChanges = useMemo(
-    () =>
-      !structuresMatch(
-        originalTemplateStructure,
-        currentTemplateStructure,
-      ),
+    () => !structuresMatch(originalTemplateStructure, currentTemplateStructure),
     [currentTemplateStructure, originalTemplateStructure],
   );
 
@@ -249,29 +256,29 @@ export default function LiveWorkoutPage() {
       setLoadError(null);
 
       try {
-        const { data: workoutData, error: workoutError } =
-          await supabase
-            .from("workouts")
-            .select("id, routine_id, start_time, end_time")
-            .eq("id", workoutId)
-            .abortSignal(controller.signal)
-            .single();
+        const { data: workoutData, error: workoutError } = await supabase
+          .from("workouts")
+          .select("id, routine_id, start_time, end_time")
+          .eq("id", workoutId)
+          .abortSignal(controller.signal)
+          .single();
 
         if (workoutError || !workoutData) {
           throw workoutError ?? new Error("Workout session not found.");
         }
 
-        const [routineResult, exercisesResult] = await Promise.all([
-          supabase
-            .from("routines")
-            .select("id, name")
-            .eq("id", workoutData.routine_id)
-            .abortSignal(controller.signal)
-            .single(),
-          supabase
-            .from("routine_exercises")
-            .select(
-              `
+        const [routineResult, exercisesResult, settingsResult] =
+          await Promise.all([
+            supabase
+              .from("routines")
+              .select("id, name")
+              .eq("id", workoutData.routine_id)
+              .abortSignal(controller.signal)
+              .single(),
+            supabase
+              .from("routine_exercises")
+              .select(
+                `
                 exercise_id,
                 target_sets,
                 target_reps,
@@ -283,11 +290,16 @@ export default function LiveWorkoutPage() {
                   muscle_group
                 )
               `,
-            )
-            .eq("routine_id", workoutData.routine_id)
-            .order("sort_order", { ascending: true })
-            .abortSignal(controller.signal),
-        ]);
+              )
+              .eq("routine_id", workoutData.routine_id)
+              .order("sort_order", { ascending: true })
+              .abortSignal(controller.signal),
+            supabase
+              .from("user_settings")
+              .select("default_rest_seconds")
+              .abortSignal(controller.signal)
+              .maybeSingle(),
+          ]);
 
         if (routineResult.error || !routineResult.data) {
           throw (
@@ -300,17 +312,30 @@ export default function LiveWorkoutPage() {
           throw exercisesResult.error;
         }
 
+        if (settingsResult.error) {
+          console.warn(
+            "Default rest timer lookup failed:",
+            settingsResult.error,
+          );
+        }
+
         if (controller.signal.aborted) {
           return;
         }
 
-        const exercises =
-          (exercisesResult.data ?? []) as unknown as SessionExercise[];
+        const savedDefaultRestSeconds =
+          settingsResult.data?.default_rest_seconds;
+        setDefaultRestSeconds(
+          Number.isInteger(savedDefaultRestSeconds) &&
+            savedDefaultRestSeconds > 0
+            ? savedDefaultRestSeconds
+            : fallbackRestSeconds,
+        );
+
+        const exercises = (exercisesResult.data ??
+          []) as unknown as SessionExercise[];
         const initialSetEntries: Record<string, SetEntry> = {};
-        const historicalSetEntries: Record<
-          string,
-          HistoricalSetDisplay
-        > = {};
+        const historicalSetEntries: Record<string, HistoricalSetDisplay> = {};
 
         for (const exercise of exercises) {
           for (
@@ -331,29 +356,21 @@ export default function LiveWorkoutPage() {
         }
 
         const exerciseIds = [
-          ...new Set(
-            exercises.map((exercise) => exercise.exercise_id),
-          ),
+          ...new Set(exercises.map((exercise) => exercise.exercise_id)),
         ];
 
         if (exerciseIds.length > 0) {
-          const { data: historyData, error: historyError } =
-            await supabase
-              .from("workout_sets")
-              .select(
-                "exercise_id, set_number, weight_lbs, reps, created_at",
-              )
-              .in("exercise_id", exerciseIds)
-              .neq("workout_id", workoutId)
-              .order("created_at", { ascending: false })
-              .limit(250)
-              .abortSignal(controller.signal);
+          const { data: historyData, error: historyError } = await supabase
+            .from("workout_sets")
+            .select("exercise_id, set_number, weight_lbs, reps, created_at")
+            .in("exercise_id", exerciseIds)
+            .neq("workout_id", workoutId)
+            .order("created_at", { ascending: false })
+            .limit(250)
+            .abortSignal(controller.signal);
 
           if (historyError) {
-            console.warn(
-              "Previous workout set lookup failed:",
-              historyError,
-            );
+            console.warn("Previous workout set lookup failed:", historyError);
           } else {
             for (const row of (historyData ?? []) as HistoricalSet[]) {
               const historyKey = getHistoricalSetKey(
@@ -376,9 +393,7 @@ export default function LiveWorkoutPage() {
         setSessionExercises(exercises);
         setSetEntries(initialSetEntries);
         setHistoricalSets(historicalSetEntries);
-        setOriginalTemplateStructure(
-          buildTemplateStructure(exercises),
-        );
+        setOriginalTemplateStructure(buildTemplateStructure(exercises));
       } catch (error) {
         if (
           controller.signal.aborted ||
@@ -388,9 +403,7 @@ export default function LiveWorkoutPage() {
         }
 
         console.error("Unable to load workout session:", error);
-        setLoadError(
-          getErrorMessage(error, "Unable to load this workout."),
-        );
+        setLoadError(getErrorMessage(error, "Unable to load this workout."));
       } finally {
         if (!controller.signal.aborted) {
           setIsLoading(false);
@@ -422,26 +435,51 @@ export default function LiveWorkoutPage() {
   }, [workout?.start_time]);
 
   useEffect(() => {
-    if (restSeconds === null) {
+    if (restEndsAt === null) {
       return;
     }
 
-    if (restSeconds <= 0) {
-      const clearId = window.setTimeout(
-        () => setRestSeconds(null),
-        1000,
-      );
-      return () => window.clearTimeout(clearId);
-    }
+    let dismissTimeoutId: number | null = null;
 
-    const intervalId = window.setInterval(() => {
-      setRestSeconds((current) =>
-        current === null ? null : Math.max(0, current - 1),
+    const updateRestTimer = () => {
+      const remainingSeconds = Math.max(
+        0,
+        Math.ceil((restEndsAt - Date.now()) / 1000),
       );
-    }, 1000);
 
-    return () => window.clearInterval(intervalId);
-  }, [restSeconds]);
+      setRestSeconds(remainingSeconds);
+
+      if (remainingSeconds === 0) {
+        window.clearInterval(intervalId);
+        dismissTimeoutId = window.setTimeout(() => {
+          setRestSeconds(null);
+          setRestEndsAt(null);
+          setRestExerciseName(null);
+        }, 1000);
+      }
+    };
+
+    const intervalId = window.setInterval(updateRestTimer, 250);
+    const syncAfterVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        updateRestTimer();
+      }
+    };
+
+    updateRestTimer();
+    document.addEventListener("visibilitychange", syncAfterVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      if (dismissTimeoutId !== null) {
+        window.clearTimeout(dismissTimeoutId);
+      }
+      document.removeEventListener(
+        "visibilitychange",
+        syncAfterVisibilityChange,
+      );
+    };
+  }, [restEndsAt]);
 
   useEffect(() => {
     if (!openExerciseMenuKey) {
@@ -469,16 +507,66 @@ export default function LiveWorkoutPage() {
     }));
   };
 
+  const postRestTimerMessage = (message: RestTimerServiceWorkerMessage) => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+      return;
+    }
+
+    if (navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage(message);
+      return;
+    }
+
+    void navigator.serviceWorker
+      .getRegistration()
+      .then((registration) => {
+        registration?.active?.postMessage(message);
+      })
+      .catch((error) => {
+        console.warn("Unable to reach the rest timer service worker:", error);
+      });
+  };
+
+  const cancelRestTimer = () => {
+    setRestSeconds(null);
+    setRestEndsAt(null);
+    setRestExerciseName(null);
+    postRestTimerMessage({
+      type: "CANCEL_REST_TIMER",
+    });
+  };
+
+  const startRestTimer = (exerciseName: string, requestedSeconds: number) => {
+    const seconds =
+      Number.isInteger(requestedSeconds) && requestedSeconds > 0
+        ? requestedSeconds
+        : defaultRestSeconds;
+
+    if (seconds <= 0) {
+      cancelRestTimer();
+      return;
+    }
+
+    setRestExerciseName(exerciseName);
+    setRestSeconds(seconds);
+    setRestEndsAt(getCurrentTimestamp() + seconds * 1000);
+    postRestTimerMessage({
+      type: "CANCEL_REST_TIMER",
+    });
+    postRestTimerMessage({
+      type: "START_REST_TIMER",
+      seconds,
+      exerciseName,
+    });
+  };
+
   const addSet = (exercise: SessionExercise) => {
     const exerciseKey = getExerciseKey(exercise);
     const exerciseEntries = Object.entries(setEntries)
       .filter(([key]) => key.startsWith(`${exerciseKey}:`))
       .map(([, entry]) => entry);
     const nextSetNumber =
-      Math.max(
-        0,
-        ...exerciseEntries.map((entry) => entry.setNumber),
-      ) + 1;
+      Math.max(0, ...exerciseEntries.map((entry) => entry.setNumber)) + 1;
     const setKey = getSetKey(exercise, nextSetNumber);
 
     setSetEntries((current) => ({
@@ -495,10 +583,7 @@ export default function LiveWorkoutPage() {
     }));
   };
 
-  const removeSet = async (
-    exercise: SessionExercise,
-    setKey: string,
-  ) => {
+  const removeSet = async (exercise: SessionExercise, setKey: string) => {
     const entry = setEntries[setKey];
 
     if (!entry || entry.isSaving || entry.isRemoving) {
@@ -555,9 +640,7 @@ export default function LiveWorkoutPage() {
     }
 
     setSessionExercises((current) =>
-      current.filter(
-        (item) => getExerciseKey(item) !== exerciseKey,
-      ),
+      current.filter((item) => getExerciseKey(item) !== exerciseKey),
     );
     setSetEntries((current) =>
       Object.fromEntries(
@@ -632,8 +715,7 @@ export default function LiveWorkoutPage() {
               exercises: {
                 id: currentExercise?.id ?? item.exercise_id,
                 name: replacementName.trim(),
-                muscle_group:
-                  currentExercise?.muscle_group ?? "Other",
+                muscle_group: currentExercise?.muscle_group ?? "Other",
               },
             }
           : item,
@@ -646,19 +728,11 @@ export default function LiveWorkoutPage() {
     setOpenExerciseMenuKey(null);
   };
 
-  const logSet = async (
-    exercise: SessionExercise,
-    setNumber: number,
-  ) => {
+  const logSet = async (exercise: SessionExercise, setNumber: number) => {
     const setKey = getSetKey(exercise, setNumber);
     const entry = setEntries[setKey];
 
-    if (
-      !entry ||
-      entry.isSaving ||
-      entry.isRemoving ||
-      entry.isComplete
-    ) {
+    if (!entry || entry.isSaving || entry.isRemoving || entry.isComplete) {
       return;
     }
 
@@ -726,16 +800,15 @@ export default function LiveWorkoutPage() {
         error: null,
       },
     }));
-    setRestSeconds(exercise.rest_time_seconds);
+    const exerciseName =
+      getExercise(exercise.exercises)?.name ?? "your exercise";
+    startRestTimer(exerciseName, exercise.rest_time_seconds);
   };
 
   const requestWorkoutSummary = async () => {
-    const response = await fetch(
-      `/api/workouts/${workoutId}/complete`,
-      {
-        method: "POST",
-      },
-    );
+    const response = await fetch(`/api/workouts/${workoutId}/complete`, {
+      method: "POST",
+    });
     const result = (await response.json().catch(() => ({}))) as {
       summary?: WorkoutSummary;
       error?: string;
@@ -745,9 +818,7 @@ export default function LiveWorkoutPage() {
 
     if (!response.ok || !result.summary) {
       throw new Error(
-        result.detail ??
-          result.error ??
-          "Unable to finish this workout.",
+        result.detail ?? result.error ?? "Unable to finish this workout.",
       );
     }
 
@@ -818,14 +889,11 @@ export default function LiveWorkoutPage() {
             }
           : current,
       );
-      setRestSeconds(null);
+      cancelRestTimer();
       setWorkoutSummary(summary);
       setIsTemplateSyncOpen(false);
     } catch (error) {
-      const message = getErrorMessage(
-        error,
-        "Unable to finish this workout.",
-      );
+      const message = getErrorMessage(error, "Unable to finish this workout.");
 
       if (showErrorsInDialog) {
         setTemplateSyncError(message);
@@ -869,6 +937,7 @@ export default function LiveWorkoutPage() {
 
     setIsCancelling(true);
     setFinishError(null);
+    cancelRestTimer();
 
     const { error } = await supabase
       .from("workouts")
@@ -899,9 +968,7 @@ export default function LiveWorkoutPage() {
           className="w-full max-w-md rounded-3xl border border-red-400/20 bg-white/5 p-7 text-center shadow-2xl backdrop-blur-xl"
         >
           <CircleAlert className="mx-auto h-8 w-8 text-red-300" />
-          <h1 className="mt-4 text-xl font-semibold">
-            Session unavailable
-          </h1>
+          <h1 className="mt-4 text-xl font-semibold">Session unavailable</h1>
           <p className="mt-2 text-sm leading-6 text-white/50">
             {loadError ?? "This workout could not be found."}
           </p>
@@ -991,7 +1058,11 @@ export default function LiveWorkoutPage() {
                   Rest timer
                 </p>
                 <p className="text-sm font-medium text-cyan-50">
-                  {restSeconds > 0 ? "Recover and reset" : "Next set"}
+                  {restSeconds > 0
+                    ? restExerciseName
+                      ? `Next: ${restExerciseName}`
+                      : "Recover and reset"
+                    : "Next set"}
                 </p>
               </div>
             </div>
@@ -1002,11 +1073,12 @@ export default function LiveWorkoutPage() {
               </span>
               <button
                 type="button"
-                onClick={() => setRestSeconds(null)}
-                aria-label="Dismiss rest timer"
-                className="rounded-xl p-2 text-cyan-100/50 transition hover:bg-white/10 hover:text-cyan-50"
+                onClick={cancelRestTimer}
+                aria-label="Skip rest timer"
+                className="inline-flex min-h-10 items-center gap-1.5 rounded-xl px-2.5 text-xs font-medium text-cyan-100/60 transition hover:bg-white/10 hover:text-cyan-50"
               >
                 <X className="h-4 w-4" />
+                <span className="hidden sm:inline">Skip Rest</span>
               </button>
             </div>
           </motion.div>
@@ -1028,8 +1100,7 @@ export default function LiveWorkoutPage() {
         {workout.end_time ? (
           <div className="mt-4 flex items-center gap-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
             <CircleAlert className="h-4 w-4 shrink-0" />
-            This workout has already been finished. Set logging is
-            disabled.
+            This workout has already been finished. Set logging is disabled.
           </div>
         ) : null}
 
@@ -1048,8 +1119,7 @@ export default function LiveWorkoutPage() {
             const exerciseSetRows = Object.entries(setEntries)
               .filter(([key]) => key.startsWith(`${exerciseKey}:`))
               .sort(
-                ([, first], [, second]) =>
-                  first.setNumber - second.setNumber,
+                ([, first], [, second]) => first.setNumber - second.setNumber,
               );
             const exerciseNote = exerciseNotes[exerciseKey];
 
@@ -1088,9 +1158,7 @@ export default function LiveWorkoutPage() {
                       type="button"
                       aria-label={`Open controls for ${exercise?.name ?? "exercise"}`}
                       aria-haspopup="menu"
-                      aria-expanded={
-                        openExerciseMenuKey === exerciseKey
-                      }
+                      aria-expanded={openExerciseMenuKey === exerciseKey}
                       onClick={() =>
                         setOpenExerciseMenuKey((current) =>
                           current === exerciseKey ? null : exerciseKey,
@@ -1113,31 +1181,23 @@ export default function LiveWorkoutPage() {
                           <ExerciseMenuButton
                             icon={MessageSquareText}
                             label="Add Note"
-                            onClick={() =>
-                              addExerciseNote(sessionExercise)
-                            }
+                            onClick={() => addExerciseNote(sessionExercise)}
                           />
                           <ExerciseMenuButton
                             icon={Timer}
                             label="Update Rest Timer"
-                            onClick={() =>
-                              updateExerciseRest(sessionExercise)
-                            }
+                            onClick={() => updateExerciseRest(sessionExercise)}
                           />
                           <ExerciseMenuButton
                             icon={Repeat2}
                             label="Replace Exercise"
-                            onClick={() =>
-                              replaceExercise(sessionExercise)
-                            }
+                            onClick={() => replaceExercise(sessionExercise)}
                           />
                           <ExerciseMenuButton
                             icon={Trash2}
                             label="Remove Exercise"
                             danger
-                            onClick={() =>
-                              removeExercise(sessionExercise)
-                            }
+                            onClick={() => removeExercise(sessionExercise)}
                           />
                         </motion.div>
                       ) : null}
@@ -1162,65 +1222,40 @@ export default function LiveWorkoutPage() {
                   </div>
 
                   <div className="space-y-2">
-                    {exerciseSetRows.map(
-                      ([setKey, entry], displayIndex) => {
-                        const setNumber = entry.setNumber;
-                        const previousSet =
-                          historicalSets[
-                            getHistoricalSetKey(
-                              sessionExercise.exercise_id,
-                              setNumber,
-                            )
-                          ];
+                    {exerciseSetRows.map(([setKey, entry], displayIndex) => {
+                      const setNumber = entry.setNumber;
+                      const previousSet =
+                        historicalSets[
+                          getHistoricalSetKey(
+                            sessionExercise.exercise_id,
+                            setNumber,
+                          )
+                        ];
 
-                        return (
-                          <div key={setKey}>
-                            <div
-                              className={`grid grid-cols-[2rem_minmax(0,1fr)_minmax(0,0.8fr)_5.75rem_2.75rem] items-center gap-2 rounded-2xl border p-2 transition sm:grid-cols-[3rem_minmax(0,1fr)_minmax(0,1fr)_8rem_2.75rem] ${
-                                entry.isComplete
-                                  ? "border-emerald-300/20 bg-emerald-300/[0.08]"
-                                  : "border-white/[0.07] bg-black/10"
-                              }`}
-                            >
-                              <span className="text-center text-sm font-semibold text-white/45">
-                                {displayIndex + 1}
-                              </span>
-                              <label className="relative">
-                                <Weight className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/25" />
-                                <input
-                                  type="number"
-                                  inputMode="decimal"
-                                  min={0}
-                                  step="0.5"
-                                  value={entry.weight}
-                                  onChange={(event) =>
-                                    updateSetEntry(
-                                      setKey,
-                                      "weight",
-                                      event.target.value,
-                                    )
-                                  }
-                                  disabled={
-                                    entry.isComplete ||
-                                    entry.isSaving ||
-                                    entry.isRemoving ||
-                                    Boolean(workout.end_time)
-                                  }
-                                  aria-label={`${exercise?.name ?? "Exercise"} set ${setNumber} weight in pounds`}
-                                  placeholder="lbs"
-                                  className="h-10 w-full rounded-xl border border-white/10 bg-white/5 pl-8 pr-2 text-sm text-white outline-none transition placeholder:text-white/20 focus:border-violet-300/40 focus:ring-4 focus:ring-violet-400/10 disabled:opacity-60"
-                                />
-                              </label>
+                      return (
+                        <div key={setKey}>
+                          <div
+                            className={`grid grid-cols-[2rem_minmax(0,1fr)_minmax(0,0.8fr)_5.75rem_2.75rem] items-center gap-2 rounded-2xl border p-2 transition sm:grid-cols-[3rem_minmax(0,1fr)_minmax(0,1fr)_8rem_2.75rem] ${
+                              entry.isComplete
+                                ? "border-emerald-300/20 bg-emerald-300/[0.08]"
+                                : "border-white/[0.07] bg-black/10"
+                            }`}
+                          >
+                            <span className="text-center text-sm font-semibold text-white/45">
+                              {displayIndex + 1}
+                            </span>
+                            <label className="relative">
+                              <Weight className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/25" />
                               <input
                                 type="number"
-                                inputMode="numeric"
-                                min={1}
-                                step={1}
-                                value={entry.reps}
+                                inputMode="decimal"
+                                min={0}
+                                step="0.5"
+                                value={entry.weight}
                                 onChange={(event) =>
                                   updateSetEntry(
                                     setKey,
-                                    "reps",
+                                    "weight",
                                     event.target.value,
                                   )
                                 }
@@ -1230,82 +1265,94 @@ export default function LiveWorkoutPage() {
                                   entry.isRemoving ||
                                   Boolean(workout.end_time)
                                 }
-                                aria-label={`${exercise?.name ?? "Exercise"} set ${setNumber} reps`}
-                                placeholder={String(
-                                  sessionExercise.target_reps,
-                                )}
-                                className="h-10 w-full rounded-xl border border-white/10 bg-white/5 px-3 text-sm text-white outline-none transition placeholder:text-white/20 focus:border-violet-300/40 focus:ring-4 focus:ring-violet-400/10 disabled:opacity-60"
+                                aria-label={`${exercise?.name ?? "Exercise"} set ${setNumber} weight in pounds`}
+                                placeholder="lbs"
+                                className="h-10 w-full rounded-xl border border-white/10 bg-white/5 pl-8 pr-2 text-sm text-white outline-none transition placeholder:text-white/20 focus:border-violet-300/40 focus:ring-4 focus:ring-violet-400/10 disabled:opacity-60"
                               />
-                              <motion.button
-                                type="button"
-                                whileTap={{ scale: 0.96 }}
-                                onClick={() =>
-                                  logSet(
-                                    sessionExercise,
-                                    setNumber,
-                                  )
-                                }
-                                disabled={
-                                  entry.isSaving ||
-                                  entry.isRemoving ||
-                                  entry.isComplete ||
-                                  Boolean(workout.end_time)
-                                }
-                                aria-pressed={entry.isComplete}
-                                className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-xl px-2 text-xs font-semibold transition disabled:cursor-default ${
-                                  entry.isComplete
-                                    ? "bg-emerald-300 text-emerald-950"
-                                    : "border border-white/10 bg-white/10 text-white/70 hover:bg-white/15 hover:text-white disabled:opacity-50"
-                                }`}
-                              >
-                                {entry.isSaving ? (
-                                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                                ) : (
-                                  <Check className="h-3.5 w-3.5" />
-                                )}
-                                {entry.isComplete ? "Done" : "Complete"}
-                              </motion.button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  void removeSet(
-                                    sessionExercise,
-                                    setKey,
-                                  )
-                                }
-                                disabled={
-                                  entry.isSaving ||
-                                  entry.isRemoving ||
-                                  Boolean(workout.end_time)
-                                }
-                                aria-label={`Remove set ${displayIndex + 1} from ${exercise?.name ?? "exercise"}`}
-                                className="grid h-11 w-11 place-items-center rounded-xl text-white/30 transition hover:bg-red-400/10 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
-                              >
-                                {entry.isRemoving ? (
-                                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                                ) : (
-                                  <X className="h-4 w-4" />
-                                )}
-                              </button>
-                            </div>
-                            {previousSet ? (
-                              <p className="mt-1.5 px-3 text-[11px] text-white/30">
-                                Prev: {previousSet.weight}lbs ×{" "}
-                                {previousSet.reps}
-                              </p>
-                            ) : null}
-                            {entry.error ? (
-                              <p
-                                role="alert"
-                                className="mt-1.5 px-3 text-xs text-red-300"
-                              >
-                                {entry.error}
-                              </p>
-                            ) : null}
+                            </label>
+                            <input
+                              type="number"
+                              inputMode="numeric"
+                              min={1}
+                              step={1}
+                              value={entry.reps}
+                              onChange={(event) =>
+                                updateSetEntry(
+                                  setKey,
+                                  "reps",
+                                  event.target.value,
+                                )
+                              }
+                              disabled={
+                                entry.isComplete ||
+                                entry.isSaving ||
+                                entry.isRemoving ||
+                                Boolean(workout.end_time)
+                              }
+                              aria-label={`${exercise?.name ?? "Exercise"} set ${setNumber} reps`}
+                              placeholder={String(sessionExercise.target_reps)}
+                              className="h-10 w-full rounded-xl border border-white/10 bg-white/5 px-3 text-sm text-white outline-none transition placeholder:text-white/20 focus:border-violet-300/40 focus:ring-4 focus:ring-violet-400/10 disabled:opacity-60"
+                            />
+                            <motion.button
+                              type="button"
+                              whileTap={{ scale: 0.96 }}
+                              onClick={() => logSet(sessionExercise, setNumber)}
+                              disabled={
+                                entry.isSaving ||
+                                entry.isRemoving ||
+                                entry.isComplete ||
+                                Boolean(workout.end_time)
+                              }
+                              aria-pressed={entry.isComplete}
+                              className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-xl px-2 text-xs font-semibold transition disabled:cursor-default ${
+                                entry.isComplete
+                                  ? "bg-emerald-300 text-emerald-950"
+                                  : "border border-white/10 bg-white/10 text-white/70 hover:bg-white/15 hover:text-white disabled:opacity-50"
+                              }`}
+                            >
+                              {entry.isSaving ? (
+                                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Check className="h-3.5 w-3.5" />
+                              )}
+                              {entry.isComplete ? "Done" : "Complete"}
+                            </motion.button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void removeSet(sessionExercise, setKey)
+                              }
+                              disabled={
+                                entry.isSaving ||
+                                entry.isRemoving ||
+                                Boolean(workout.end_time)
+                              }
+                              aria-label={`Remove set ${displayIndex + 1} from ${exercise?.name ?? "exercise"}`}
+                              className="grid h-11 w-11 place-items-center rounded-xl text-white/30 transition hover:bg-red-400/10 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {entry.isRemoving ? (
+                                <LoaderCircle className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <X className="h-4 w-4" />
+                              )}
+                            </button>
                           </div>
-                        );
-                      },
-                    )}
+                          {previousSet ? (
+                            <p className="mt-1.5 px-3 text-[11px] text-white/30">
+                              Prev: {previousSet.weight}lbs × {previousSet.reps}
+                            </p>
+                          ) : null}
+                          {entry.error ? (
+                            <p
+                              role="alert"
+                              className="mt-1.5 px-3 text-xs text-red-300"
+                            >
+                              {entry.error}
+                            </p>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
 
                   <button
@@ -1326,9 +1373,7 @@ export default function LiveWorkoutPage() {
         {sessionExercises.length === 0 ? (
           <div className="mt-5 rounded-3xl border border-dashed border-white/10 bg-white/[0.03] px-6 py-16 text-center backdrop-blur-lg">
             <Dumbbell className="mx-auto h-7 w-7 text-white/25" />
-            <h2 className="mt-4 font-semibold">
-              No exercises in this routine
-            </h2>
+            <h2 className="mt-4 font-semibold">No exercises in this routine</h2>
             <p className="mt-2 text-sm text-white/40">
               Finish this session and add exercises to the template.
             </p>
@@ -1339,9 +1384,7 @@ export default function LiveWorkoutPage() {
           <span className="mx-auto grid h-11 w-11 place-items-center rounded-2xl bg-violet-300/10 text-violet-200">
             <Trophy className="h-5 w-5" />
           </span>
-          <h2 className="mt-3 text-lg font-semibold">
-            Ready to wrap up?
-          </h2>
+          <h2 className="mt-3 text-lg font-semibold">Ready to wrap up?</h2>
           <p className="mt-1 text-sm text-white/40">
             Finish the workout when your final set is complete.
           </p>
@@ -1362,9 +1405,7 @@ export default function LiveWorkoutPage() {
               whileTap={{ scale: 0.98 }}
               onClick={cancelWorkout}
               disabled={
-                isCancelling ||
-                isFinishing ||
-                Boolean(workout.end_time)
+                isCancelling || isFinishing || Boolean(workout.end_time)
               }
               className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl border border-red-400/25 bg-red-400/10 px-6 text-sm font-semibold text-red-200 transition hover:bg-red-400/15 disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-48"
             >
@@ -1382,9 +1423,7 @@ export default function LiveWorkoutPage() {
               whileTap={{ scale: 0.98 }}
               onClick={finishWorkout}
               disabled={
-                isFinishing ||
-                isCancelling ||
-                Boolean(workout.end_time)
+                isFinishing || isCancelling || Boolean(workout.end_time)
               }
               className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl bg-violet-400 px-6 text-sm font-semibold text-neutral-950 shadow-[0_12px_40px_rgba(167,139,250,0.2)] transition hover:bg-violet-300 disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-56"
             >
@@ -1453,8 +1492,8 @@ export default function LiveWorkoutPage() {
                 You made changes to this routine.
               </h2>
               <p className="mt-2 text-sm leading-6 text-white/45">
-                Do you want to update the original template, or just
-                save this for today?
+                Do you want to update the original template, or just save this
+                for today?
               </p>
 
               <div className="mt-5 grid grid-cols-2 gap-3 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
@@ -1475,8 +1514,7 @@ export default function LiveWorkoutPage() {
                   </p>
                   <p className="mt-1.5 text-sm font-medium text-white/80">
                     {currentTemplateStructure.reduce(
-                      (total, exercise) =>
-                        total + exercise.target_sets,
+                      (total, exercise) => total + exercise.target_sets,
                       0,
                     )}{" "}
                     sets
@@ -1486,8 +1524,8 @@ export default function LiveWorkoutPage() {
 
               {currentTemplateStructure.length === 0 ? (
                 <p className="mt-4 rounded-xl border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-xs leading-5 text-amber-100">
-                  An empty structure can be saved for today, but it
-                  cannot replace the original template.
+                  An empty structure can be saved for today, but it cannot
+                  replace the original template.
                 </p>
               ) : null}
 
@@ -1522,8 +1560,7 @@ export default function LiveWorkoutPage() {
                 <button
                   type="button"
                   disabled={
-                    isFinishing ||
-                    currentTemplateStructure.length === 0
+                    isFinishing || currentTemplateStructure.length === 0
                   }
                   onClick={() =>
                     void completeWorkout({
