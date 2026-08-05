@@ -11,6 +11,7 @@ export const metadata: Metadata = {
     template: "%s · Life OS",
   },
   description: "One focused place for coursework, time, and training.",
+  manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
@@ -21,6 +22,9 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <html lang="en" className="dark">
+      <head>
+        <link rel="apple-touch-icon" href="/icon-512x512.png" />
+      </head>
       <body className="min-h-screen bg-neutral-950 text-neutral-50 antialiased">
         <div className="relative min-h-screen overflow-x-hidden">
           <div

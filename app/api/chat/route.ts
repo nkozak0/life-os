@@ -148,7 +148,9 @@ async function fetchUpcomingCalendarContext(
       }[];
     };
     const timeMin = new Date();
-    const timeMax = new Date(timeMin.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const timeMax = new Date(
+      timeMin.getTime() + 30 * 24 * 60 * 60 * 1000,
+    );
     const eventCollections = await Promise.all(
       (calendarList.items ?? [])
         .filter(
@@ -162,7 +164,7 @@ async function fetchUpcomingCalendarContext(
         .slice(0, 12)
         .map(async (calendar) => {
           const eventsResponse = await fetch(
-            `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.id)}/events?timeMin=${encodeURIComponent(timeMin.toISOString())}&timeMax=${encodeURIComponent(timeMax.toISOString())}&maxResults=25&singleEvents=true&orderBy=startTime`,
+            `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.id)}/events?timeMin=${encodeURIComponent(timeMin.toISOString())}&timeMax=${encodeURIComponent(timeMax.toISOString())}&maxResults=50&singleEvents=true&orderBy=startTime`,
             {
               headers,
               cache: "no-store",
@@ -252,7 +254,7 @@ function buildRealtimeContextBlock({
       due_at: assignment.due_date,
       source: cleanContextText(assignment.source, 40),
     })),
-    upcoming_7_day_calendar: calendar,
+    upcoming_30_day_calendar: calendar,
   };
 
   return [
