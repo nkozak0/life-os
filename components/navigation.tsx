@@ -7,7 +7,6 @@ import {
   Dumbbell,
   House,
   ListTodo,
-  MessageCircle,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -21,12 +20,11 @@ type NavItem = {
 };
 
 const navItems: NavItem[] = [
-  { label: "Home", href: "/", icon: House },
+  { label: "Home", href: "/chat", icon: House },
   { label: "Assignments", href: "/assignments", icon: ListTodo },
   { label: "Calendar", href: "/calendar", icon: CalendarDays },
   { label: "Workouts", href: "/workouts", icon: Dumbbell },
   { label: "Analytics", href: "/analytics", icon: ChartBar },
-  { label: "Chat", href: "/chat", icon: MessageCircle },
   { label: "Settings", href: "/settings", icon: Settings },
 ];
 
@@ -44,7 +42,7 @@ export function Navigation() {
     >
       <div className="flex items-center justify-between gap-1 lg:flex-col lg:gap-2">
         {navItems.map(({ label, href, icon: Icon }) => {
-          const isActive = href === "/" ? pathname === href : pathname.startsWith(href);
+          const isActive = pathname.startsWith(href);
 
           return (
             <Link
