@@ -16,7 +16,10 @@ create table if not exists public.user_settings (
   semester_start date,
   semester_end date,
   weight_unit text not null default 'lbs',
-  default_rest_seconds integer not null default 90
+  default_rest_seconds integer not null default 90,
+  last_ai_checkin timestamptz not null
+    default (now() - interval '1 day'),
+  core_memory text not null default ''
 );
 
 alter table public.user_settings
@@ -29,7 +32,11 @@ alter table public.user_settings
   add column if not exists weight_unit text
     not null default 'lbs',
   add column if not exists default_rest_seconds integer
-    not null default 90;
+    not null default 90,
+  add column if not exists last_ai_checkin timestamptz
+    not null default (now() - interval '1 day'),
+  add column if not exists core_memory text
+    not null default '';
 
 do $$
 begin
@@ -92,8 +99,47 @@ begin
       add constraint user_settings_rest_seconds_check
       check (default_rest_seconds between 15 and 900);
   end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'user_settings_core_memory_length_check'
+  ) then
+    alter table public.user_settings
+      add constraint user_settings_core_memory_length_check
+      check (char_length(core_memory) <= 8000);
+  end if;
 end
 $$;
+
+insert into public.user_settings (user_id)
+select id
+from auth.users
+on conflict (user_id) do nothing;
+
+create or replace function public.create_default_user_settings()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  insert into public.user_settings (user_id)
+  values (new.id)
+  on conflict (user_id) do nothing;
+
+  return new;
+end;
+$$;
+
+revoke all on function public.create_default_user_settings()
+  from public, anon, authenticated;
+
+drop trigger if exists create_default_user_settings_on_signup
+  on auth.users;
+create trigger create_default_user_settings_on_signup
+  after insert on auth.users
+  for each row execute procedure public.create_default_user_settings();
 
 create unique index if not exists user_settings_user_id_idx
   on public.user_settings (user_id);

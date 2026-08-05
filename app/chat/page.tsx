@@ -69,15 +69,38 @@ function createMessageId() {
 
 function splitAssistantMessage(content: string) {
   return content
-    .split(/\r?\n/)
+    .split(/\r?\n+|(?<=[.!?])\s+/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+}
+
+function waitForBubbleDelay(
+  milliseconds: number,
+  signal: AbortSignal,
+) {
+  return new Promise<void>((resolve, reject) => {
+    const timeoutId = window.setTimeout(resolve, milliseconds);
+    const handleAbort = () => {
+      window.clearTimeout(timeoutId);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+
+    if (signal.aborted) {
+      handleAbort();
+      return;
+    }
+
+    signal.addEventListener("abort", handleAbort, {
+      once: true,
+    });
+  });
 }
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [draft, setDraft] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const scrollAnchorRef = useRef<HTMLDivElement>(null);
@@ -98,6 +121,71 @@ export default function ChatPage() {
     [],
   );
 
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadChatHistory() {
+      setIsLoadingHistory(true);
+      setError(null);
+
+      try {
+        const response = await fetch("/api/chat/history", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const result = (await response
+          .json()
+          .catch(() => ({}))) as {
+          messages?: {
+            id: string;
+            role: "user" | "assistant";
+            content: string;
+          }[];
+          error?: string;
+        };
+
+        if (!response.ok) {
+          throw new Error(
+            result.error ?? "Chat history could not be loaded.",
+          );
+        }
+
+        if (!controller.signal.aborted) {
+          setMessages(
+            (result.messages ?? []).filter(
+              (message) =>
+                (message.role === "user" ||
+                  message.role === "assistant") &&
+                Boolean(message.content?.trim()),
+            ),
+          );
+        }
+      } catch (historyError) {
+        if (
+          controller.signal.aborted ||
+          (historyError instanceof Error &&
+            historyError.name === "AbortError")
+        ) {
+          return;
+        }
+
+        setError(
+          historyError instanceof Error
+            ? historyError.message
+            : "Chat history could not be loaded.",
+        );
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsLoadingHistory(false);
+        }
+      }
+    }
+
+    void loadChatHistory();
+
+    return () => controller.abort();
+  }, []);
+
   const closeSettings = useCallback(() => {
     setIsSettingsOpen(false);
   }, []);
@@ -109,13 +197,14 @@ export default function ChatPage() {
     setDraft("");
     setError(null);
     setIsSending(false);
+    setIsLoadingHistory(false);
   }, []);
 
   const sendMessage = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const content = draft.trim();
 
-    if (!content || isSending) {
+    if (!content || isSending || isLoadingHistory) {
       return;
     }
 
@@ -154,17 +243,34 @@ export default function ChatPage() {
       };
 
       if (!response.ok || !result.message?.trim()) {
-        throw new Error(result.error ?? "The assistant could not respond.");
+        throw new Error(result.error ?? "Koda could not respond.");
       }
 
-      setMessages((current) => [
-        ...current,
-        {
-          id: createMessageId(),
-          role: "assistant",
-          content: result.message!,
-        },
-      ]);
+      const kodaBubbles = splitAssistantMessage(result.message);
+
+      for (
+        let bubbleIndex = 0;
+        bubbleIndex < kodaBubbles.length;
+        bubbleIndex += 1
+      ) {
+        if (bubbleIndex > 0) {
+          const previousBubble = kodaBubbles[bubbleIndex - 1];
+          const delay = Math.min(
+            2000,
+            1500 + previousBubble.length * 5,
+          );
+          await waitForBubbleDelay(delay, controller.signal);
+        }
+
+        setMessages((current) => [
+          ...current,
+          {
+            id: createMessageId(),
+            role: "assistant",
+            content: kodaBubbles[bubbleIndex],
+          },
+        ]);
+      }
     } catch (requestError) {
       if (
         requestError instanceof DOMException &&
@@ -176,7 +282,7 @@ export default function ChatPage() {
       setError(
         requestError instanceof Error
           ? requestError.message
-          : "The assistant could not respond.",
+          : "Koda could not respond.",
       );
     } finally {
       if (requestControllerRef.current === controller) {
@@ -222,7 +328,7 @@ export default function ChatPage() {
             </div>
             <span className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-300/15 bg-emerald-300/[0.07] px-3 py-1.5 text-xs font-medium text-emerald-200/75">
               <span className="size-2 rounded-full bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.75)]" />
-              Copilot online
+              Koda online
             </span>
           </div>
 
@@ -265,7 +371,7 @@ export default function ChatPage() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <h2 className="truncate font-semibold tracking-tight">
-                    Life OS Copilot
+                    Koda
                   </h2>
                   <Sparkles className="h-3.5 w-3.5 text-violet-300/70" />
                 </div>
@@ -291,7 +397,23 @@ export default function ChatPage() {
             className="min-h-0 flex-1 overflow-y-auto px-3 py-5 sm:px-5"
             aria-live="polite"
           >
-            {messages.length === 0 && !isSending ? (
+            {isLoadingHistory ? (
+              <div
+                className="mx-auto max-w-2xl animate-pulse py-3 sm:py-8"
+                aria-label="Loading conversation history"
+              >
+                <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-6">
+                  <div className="size-12 rounded-2xl bg-white/[0.07]" />
+                  <div className="mt-5 h-5 w-48 rounded bg-white/[0.07]" />
+                  <div className="mt-3 h-4 w-full rounded bg-white/[0.045]" />
+                  <div className="mt-2 h-4 w-3/4 rounded bg-white/[0.045]" />
+                </div>
+              </div>
+            ) : null}
+
+            {!isLoadingHistory &&
+            messages.length === 0 &&
+            !isSending ? (
               <div className="mx-auto max-w-2xl py-3 sm:py-8">
                 <div className="rounded-3xl border border-violet-300/15 bg-gradient-to-br from-violet-300/[0.09] via-white/[0.045] to-cyan-300/[0.04] p-5 shadow-2xl shadow-violet-950/20 sm:p-7">
                   <div className="flex items-start gap-4">
@@ -305,7 +427,7 @@ export default function ChatPage() {
                         Synced context
                       </div>
                       <h3 className="mt-3 text-xl font-semibold tracking-tight text-white">
-                        Meet your Life OS Copilot
+                        Meet Koda
                       </h3>
                       <p className="mt-2 text-sm leading-6 text-white/45">
                         I can use your latest calendar, assignments, and workout
@@ -425,7 +547,10 @@ export default function ChatPage() {
             })}
 
             {isSending ? (
-              <div className="mt-6 flex justify-start">
+              <div
+                className="mt-6 flex justify-start"
+                aria-label="Koda is typing"
+              >
                 <div className="flex items-end gap-2">
                   <span className="mb-0.5 grid h-7 w-7 place-items-center rounded-xl border border-white/10 bg-white/5 text-violet-200/70">
                     <Bot className="h-3.5 w-3.5" />
@@ -462,7 +587,7 @@ export default function ChatPage() {
               className="flex items-end gap-2 rounded-2xl border border-white/10 bg-white/[0.06] p-2 shadow-inner shadow-black/20 transition focus-within:border-violet-300/30 focus-within:ring-4 focus-within:ring-violet-400/[0.07]"
             >
               <label htmlFor="agent-message" className="sr-only">
-                Message Life OS Copilot
+                Message Koda
               </label>
               <textarea
                 ref={composerRef}
@@ -472,13 +597,15 @@ export default function ChatPage() {
                 onKeyDown={handleComposerKeyDown}
                 rows={1}
                 maxLength={4000}
-                disabled={isSending}
-                placeholder="ask your copilot anything"
+                disabled={isSending || isLoadingHistory}
+                placeholder="message Koda"
                 className="max-h-32 min-h-11 flex-1 resize-none bg-transparent px-2 py-3 text-sm leading-5 text-white outline-none placeholder:text-white/25 disabled:opacity-60"
               />
               <button
                 type="submit"
-                disabled={!draft.trim() || isSending}
+                disabled={
+                  !draft.trim() || isSending || isLoadingHistory
+                }
                 aria-label="Send message"
                 className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-violet-400 text-neutral-950 shadow-lg shadow-violet-950/30 transition hover:bg-violet-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/25 disabled:shadow-none"
               >
