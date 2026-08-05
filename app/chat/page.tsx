@@ -31,13 +31,7 @@ type ChatMessage = {
   content: string;
 };
 
-const initialMessages: ChatMessage[] = [
-  {
-    id: "welcome",
-    role: "assistant",
-    content: "good to see you\nwhat should we get organized first",
-  },
-];
+const initialMessages: ChatMessage[] = [];
 
 const homeLinks = [
   {
@@ -64,9 +58,9 @@ const homeLinks = [
 ];
 
 const starterPrompts = [
-  "help me plan today",
-  "what should i prioritize",
-  "check in on my goals",
+  "Help me balance my coursework and workouts",
+  "Prioritize my upcoming assignments",
+  "Help me optimize this week",
 ];
 
 function createMessageId() {
@@ -297,6 +291,83 @@ export default function ChatPage() {
             className="min-h-0 flex-1 overflow-y-auto px-3 py-5 sm:px-5"
             aria-live="polite"
           >
+            {messages.length === 0 && !isSending ? (
+              <div className="mx-auto max-w-2xl py-3 sm:py-8">
+                <div className="rounded-3xl border border-violet-300/15 bg-gradient-to-br from-violet-300/[0.09] via-white/[0.045] to-cyan-300/[0.04] p-5 shadow-2xl shadow-violet-950/20 sm:p-7">
+                  <div className="flex items-start gap-4">
+                    <span className="relative grid size-12 shrink-0 place-items-center rounded-2xl border border-violet-300/20 bg-violet-300/10 text-violet-200">
+                      <Bot className="size-5" />
+                      <span className="absolute -bottom-0.5 -right-0.5 size-3 rounded-full border-2 border-neutral-900 bg-emerald-400" />
+                    </span>
+                    <div>
+                      <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300/15 bg-emerald-300/[0.07] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-emerald-200/75">
+                        <Sparkles className="size-3" />
+                        Synced context
+                      </div>
+                      <h3 className="mt-3 text-xl font-semibold tracking-tight text-white">
+                        Meet your Life OS Copilot
+                      </h3>
+                      <p className="mt-2 text-sm leading-6 text-white/45">
+                        I can use your latest calendar, assignments, and workout
+                        activity to help you make realistic plans—not generic
+                        ones.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid grid-cols-3 gap-2">
+                    {[
+                      {
+                        label: "Calendar",
+                        icon: CalendarDays,
+                        color: "text-emerald-200",
+                      },
+                      {
+                        label: "Assignments",
+                        icon: ListTodo,
+                        color: "text-indigo-200",
+                      },
+                      {
+                        label: "Workouts",
+                        icon: Dumbbell,
+                        color: "text-cyan-200",
+                      },
+                    ].map(({ label, icon: Icon, color }) => (
+                      <div
+                        key={label}
+                        className="flex min-w-0 flex-col items-center gap-2 rounded-2xl border border-white/[0.08] bg-black/15 px-2 py-3 text-center"
+                      >
+                        <Icon className={`size-4 ${color}`} />
+                        <span className="truncate text-[11px] font-medium text-white/55 sm:text-xs">
+                          {label}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-5 rounded-2xl border border-white/[0.08] bg-black/20 p-4">
+                    <p className="text-sm font-medium leading-6 text-white/80">
+                      What are your primary goals right now, and how can I help
+                      you optimize your schedule to accomplish them?
+                    </p>
+                  </div>
+
+                  <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                    {starterPrompts.map((prompt) => (
+                      <button
+                        key={prompt}
+                        type="button"
+                        onClick={() => selectStarterPrompt(prompt)}
+                        className="min-h-11 rounded-2xl border border-violet-300/15 bg-violet-300/[0.06] px-3 py-2.5 text-left text-xs leading-5 text-violet-100/70 transition hover:border-violet-300/25 hover:bg-violet-300/[0.11] hover:text-violet-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/60"
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
             {messages.map((message, messageIndex) => {
               const isAssistant = message.role === "assistant";
               const senderChanged =
@@ -352,21 +423,6 @@ export default function ChatPage() {
                 </div>
               );
             })}
-
-            {messages.length === 1 && !isSending ? (
-              <div className="ml-9 mt-4 flex flex-wrap gap-2">
-                {starterPrompts.map((prompt) => (
-                  <button
-                    key={prompt}
-                    type="button"
-                  onClick={() => selectStarterPrompt(prompt)}
-                    className="rounded-full border border-violet-300/15 bg-violet-300/[0.06] px-3 py-2 text-xs text-violet-100/65 transition hover:border-violet-300/25 hover:bg-violet-300/[0.11] hover:text-violet-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/60"
-                  >
-                    {prompt}
-                  </button>
-                ))}
-              </div>
-            ) : null}
 
             {isSending ? (
               <div className="mt-6 flex justify-start">

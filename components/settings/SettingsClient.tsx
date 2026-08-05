@@ -103,12 +103,8 @@ function SectionCard({
           <Icon className="size-5" />
         </span>
         <div className="min-w-0">
-          <h2 className="font-semibold tracking-tight text-white">
-            {title}
-          </h2>
-          <p className="mt-1 text-sm leading-5 text-white/40">
-            {description}
-          </p>
+          <h2 className="font-semibold tracking-tight text-white">{title}</h2>
+          <p className="mt-1 text-sm leading-5 text-white/40">{description}</p>
         </div>
       </header>
       <div className="p-4 sm:p-6">{children}</div>
@@ -189,9 +185,7 @@ function SettingsSkeleton() {
 
 function urlBase64ToUint8Array(value: string) {
   const padding = "=".repeat((4 - (value.length % 4)) % 4);
-  const base64 = (value + padding)
-    .replace(/-/g, "+")
-    .replace(/_/g, "/");
+  const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
   const rawData = window.atob(base64);
   const buffer = new ArrayBuffer(rawData.length);
   const output = new Uint8Array(buffer);
@@ -209,8 +203,7 @@ function detectPushCapability(): PushCapability {
   };
   const isIOS =
     /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-    (navigator.platform === "MacIntel" &&
-      navigator.maxTouchPoints > 1);
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   const isStandalone =
     window.matchMedia("(display-mode: standalone)").matches ||
     navigatorWithStandalone.standalone === true;
@@ -237,9 +230,7 @@ function normalizeSettings(
     semesterStart: data?.semester_start ?? "",
     semesterEnd: data?.semester_end ?? "",
     weightUnit: data?.weight_unit ?? "lbs",
-    defaultRestSeconds: String(
-      data?.default_rest_seconds ?? 90,
-    ),
+    defaultRestSeconds: String(data?.default_rest_seconds ?? 90),
   };
 }
 
@@ -247,29 +238,26 @@ export default function SettingsClient() {
   const router = useRouter();
   const supabase = useMemo(() => createClient(), []);
   const [email, setEmail] = useState("");
-  const [settings, setSettings] =
-    useState<SettingsFormState>(initialSettings);
+  const [settings, setSettings] = useState<SettingsFormState>(initialSettings);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
-  const [isClearingHistory, setIsClearingHistory] =
+  const [isClearingHistory, setIsClearingHistory] = useState(false);
+  const [isClearingWorkoutHistory, setIsClearingWorkoutHistory] =
     useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [pushCapability, setPushCapability] =
-    useState<PushCapability>({
-      checked: false,
-      isIOS: false,
-      isStandalone: false,
-      isSupported: false,
-    });
-  const [notificationsEnabled, setNotificationsEnabled] =
-    useState(false);
-  const [isUpdatingNotifications, setIsUpdatingNotifications] =
-    useState(true);
-  const [notificationError, setNotificationError] = useState<
-    string | null
-  >(null);
+  const [pushCapability, setPushCapability] = useState<PushCapability>({
+    checked: false,
+    isIOS: false,
+    isStandalone: false,
+    isSupported: false,
+  });
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const [isUpdatingNotifications, setIsUpdatingNotifications] = useState(true);
+  const [notificationError, setNotificationError] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -293,9 +281,9 @@ export default function SettingsClient() {
           return;
         }
 
-        const settingsResult =
-          (await settingsResponse.json().catch(() => ({}))) as
-            SettingsApiResponse;
+        const settingsResult = (await settingsResponse
+          .json()
+          .catch(() => ({}))) as SettingsApiResponse;
 
         if (!settingsResponse.ok) {
           throw new Error(
@@ -310,10 +298,7 @@ export default function SettingsClient() {
         setEmail(userResult.data.user.email ?? "Signed-in user");
         setSettings(normalizeSettings(settingsResult.settings));
       } catch (error) {
-        if (
-          error instanceof DOMException &&
-          error.name === "AbortError"
-        ) {
+        if (error instanceof DOMException && error.name === "AbortError") {
           return;
         }
 
@@ -356,10 +341,8 @@ export default function SettingsClient() {
       }
 
       try {
-        const registration =
-          await navigator.serviceWorker.register("/sw.js");
-        const subscription =
-          await registration.pushManager.getSubscription();
+        const registration = await navigator.serviceWorker.register("/sw.js");
+        const subscription = await registration.pushManager.getSubscription();
 
         if (isActive) {
           setNotificationsEnabled(Boolean(subscription));
@@ -410,9 +393,7 @@ export default function SettingsClient() {
       restSeconds < 15 ||
       restSeconds > 900
     ) {
-      setPageError(
-        "Default rest timer must be between 15 and 900 seconds.",
-      );
+      setPageError("Default rest timer must be between 15 and 900 seconds.");
       return;
     }
 
@@ -421,9 +402,7 @@ export default function SettingsClient() {
       settings.semesterEnd &&
       settings.semesterEnd < settings.semesterStart
     ) {
-      setPageError(
-        "Semester end must be on or after semester start.",
-      );
+      setPageError("Semester end must be on or after semester start.");
       return;
     }
 
@@ -448,14 +427,12 @@ export default function SettingsClient() {
           default_rest_seconds: restSeconds,
         }),
       });
-      const result =
-        (await response.json().catch(() => ({}))) as
-          SettingsApiResponse;
+      const result = (await response
+        .json()
+        .catch(() => ({}))) as SettingsApiResponse;
 
       if (!response.ok) {
-        throw new Error(
-          result.error ?? "Settings could not be saved.",
-        );
+        throw new Error(result.error ?? "Settings could not be saved.");
       }
 
       setSettings(normalizeSettings(result.settings));
@@ -463,9 +440,7 @@ export default function SettingsClient() {
       router.refresh();
     } catch (error) {
       setPageError(
-        error instanceof Error
-          ? error.message
-          : "Settings could not be saved.",
+        error instanceof Error ? error.message : "Settings could not be saved.",
       );
     } finally {
       setIsSaving(false);
@@ -485,35 +460,28 @@ export default function SettingsClient() {
     setNotificationError(null);
 
     try {
-      const registration =
-        await navigator.serviceWorker.register("/sw.js");
+      const registration = await navigator.serviceWorker.register("/sw.js");
       const existingSubscription =
         await registration.pushManager.getSubscription();
 
       if (notificationsEnabled) {
         if (existingSubscription) {
-          const response = await fetch(
-            "/api/push-subscriptions",
-            {
-              method: "DELETE",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                endpoint: existingSubscription.endpoint,
-              }),
+          const response = await fetch("/api/push-subscriptions", {
+            method: "DELETE",
+            headers: {
+              "Content-Type": "application/json",
             },
-          );
-          const result = (await response
-            .json()
-            .catch(() => ({}))) as {
+            body: JSON.stringify({
+              endpoint: existingSubscription.endpoint,
+            }),
+          });
+          const result = (await response.json().catch(() => ({}))) as {
             error?: string;
           };
 
           if (!response.ok) {
             throw new Error(
-              result.error ??
-                "Notifications could not be disabled.",
+              result.error ?? "Notifications could not be disabled.",
             );
           }
 
@@ -535,8 +503,7 @@ export default function SettingsClient() {
         );
       }
 
-      const vapidPublicKey =
-        process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+      const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
 
       if (!vapidPublicKey) {
         throw new Error(
@@ -550,8 +517,7 @@ export default function SettingsClient() {
       if (!subscription) {
         subscription = await registration.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey:
-            urlBase64ToUint8Array(vapidPublicKey),
+          applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
         });
         createdSubscription = true;
       }
@@ -572,9 +538,7 @@ export default function SettingsClient() {
           await subscription.unsubscribe();
         }
 
-        throw new Error(
-          result.error ?? "Notifications could not be enabled.",
-        );
+        throw new Error(result.error ?? "Notifications could not be enabled.");
       }
 
       setNotificationsEnabled(true);
@@ -612,9 +576,7 @@ export default function SettingsClient() {
   const clearChatHistory = async () => {
     if (
       isClearingHistory ||
-      !window.confirm(
-        "Clear all AI chat history? This cannot be undone.",
-      )
+      !window.confirm("Clear all AI chat history? This cannot be undone.")
     ) {
       return;
     }
@@ -632,9 +594,7 @@ export default function SettingsClient() {
       };
 
       if (!response.ok) {
-        throw new Error(
-          result.error ?? "Chat history could not be cleared.",
-        );
+        throw new Error(result.error ?? "Chat history could not be cleared.");
       }
 
       setNotice("AI chat history cleared");
@@ -650,12 +610,58 @@ export default function SettingsClient() {
     }
   };
 
+  const clearWorkoutHistory = async () => {
+    if (
+      isClearingWorkoutHistory ||
+      !window.confirm(
+        "Clear every completed and active workout plus all logged sets? This cannot be undone.",
+      )
+    ) {
+      return;
+    }
+
+    setIsClearingWorkoutHistory(true);
+    setPageError(null);
+    setNotice(null);
+
+    try {
+      const response = await fetch("/api/workouts/history", {
+        method: "DELETE",
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        workoutsDeleted?: number;
+        setsDeleted?: number;
+        error?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(
+          result.error ?? "Workout history could not be cleared.",
+        );
+      }
+
+      setNotice(
+        result.workoutsDeleted
+          ? `Cleared ${result.workoutsDeleted} workout${result.workoutsDeleted === 1 ? "" : "s"} and ${result.setsDeleted ?? 0} logged sets`
+          : "Workout history is already clear",
+      );
+      router.refresh();
+    } catch (error) {
+      setPageError(
+        error instanceof Error
+          ? error.message
+          : "Workout history could not be cleared.",
+      );
+    } finally {
+      setIsClearingWorkoutHistory(false);
+    }
+  };
+
   const pushBlockedOnIOS =
     pushCapability.checked &&
     pushCapability.isIOS &&
     !pushCapability.isStandalone;
-  const pushUnavailable =
-    pushCapability.checked && !pushCapability.isSupported;
+  const pushUnavailable = pushCapability.checked && !pushCapability.isSupported;
 
   return (
     <div className="mx-auto w-full max-w-4xl pb-8">
@@ -669,8 +675,7 @@ export default function SettingsClient() {
             Settings
           </h1>
           <p className="mt-2 max-w-xl text-sm leading-6 text-white/40">
-            Tune your copilot, trackers, account, and device
-            experience
+            Tune your copilot, trackers, account, and device experience
           </p>
         </div>
         <button
@@ -753,8 +758,8 @@ export default function SettingsClient() {
               <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-300/20 bg-amber-300/[0.08] p-4 text-sm leading-6 text-amber-100/85">
                 <Smartphone className="mt-0.5 size-5 shrink-0 text-amber-200" />
                 <p>
-                  You must &apos;Add to Home Screen&apos; via Safari
-                  to enable push notifications.
+                  You must &apos;Add to Home Screen&apos; via Safari to enable
+                  push notifications.
                 </p>
               </div>
             ) : null}
@@ -762,10 +767,7 @@ export default function SettingsClient() {
             {pushUnavailable && !pushBlockedOnIOS ? (
               <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-300/20 bg-amber-300/[0.08] p-4 text-sm leading-6 text-amber-100/85">
                 <CircleAlert className="mt-0.5 size-5 shrink-0" />
-                <p>
-                  Web Push is not supported by this browser or
-                  device.
-                </p>
+                <p>Web Push is not supported by this browser or device.</p>
               </div>
             ) : null}
 
@@ -787,9 +789,7 @@ export default function SettingsClient() {
               ) : (
                 <ToggleSwitch
                   checked={notificationsEnabled}
-                  disabled={
-                    pushBlockedOnIOS || pushUnavailable
-                  }
+                  disabled={pushBlockedOnIOS || pushUnavailable}
                   label="Toggle Web Push Notifications"
                   onChange={toggleNotifications}
                 />
@@ -806,13 +806,11 @@ export default function SettingsClient() {
               </p>
             ) : null}
 
-            {!pushBlockedOnIOS &&
-            !pushUnavailable &&
-            pushCapability.checked ? (
+            {!pushBlockedOnIOS && !pushUnavailable && pushCapability.checked ? (
               <p className="mt-4 flex items-start gap-2 text-xs leading-5 text-white/30">
                 <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-emerald-300/65" />
-                Permission is requested by your device only when you
-                turn notifications on
+                Permission is requested by your device only when you turn
+                notifications on
               </p>
             ) : null}
           </SectionCard>
@@ -832,10 +830,7 @@ export default function SettingsClient() {
                   id="settings-preferred-name"
                   value={settings.preferredName}
                   onChange={(event) =>
-                    updateSetting(
-                      "preferredName",
-                      event.target.value,
-                    )
+                    updateSetting("preferredName", event.target.value)
                   }
                   maxLength={80}
                   placeholder="e.g., Nico"
@@ -873,10 +868,7 @@ export default function SettingsClient() {
                   id="settings-current-focus"
                   value={settings.currentFocus}
                   onChange={(event) =>
-                    updateSetting(
-                      "currentFocus",
-                      event.target.value,
-                    )
+                    updateSetting("currentFocus", event.target.value)
                   }
                   rows={4}
                   maxLength={600}
@@ -892,8 +884,8 @@ export default function SettingsClient() {
             <div className="mt-5 flex items-start gap-3 rounded-2xl border border-violet-300/10 bg-violet-300/[0.04] p-4">
               <Flame className="mt-0.5 size-4 shrink-0 text-violet-300/70" />
               <p className="text-xs leading-5 text-white/35">
-                Unhinged increases the intensity and playful callouts,
-                but never allows abusive or unsafe responses
+                Unhinged increases the intensity and playful callouts, but never
+                allows abusive or unsafe responses
               </p>
             </div>
           </SectionCard>
@@ -928,36 +920,26 @@ export default function SettingsClient() {
                 </div>
               </div>
               <div>
-                <FieldLabel htmlFor="semester-start">
-                  Semester Start
-                </FieldLabel>
+                <FieldLabel htmlFor="semester-start">Semester Start</FieldLabel>
                 <input
                   id="semester-start"
                   type="date"
                   value={settings.semesterStart}
                   onChange={(event) =>
-                    updateSetting(
-                      "semesterStart",
-                      event.target.value,
-                    )
+                    updateSetting("semesterStart", event.target.value)
                   }
                   className={`${inputClassName} [color-scheme:dark]`}
                 />
               </div>
               <div>
-                <FieldLabel htmlFor="semester-end">
-                  Semester End
-                </FieldLabel>
+                <FieldLabel htmlFor="semester-end">Semester End</FieldLabel>
                 <input
                   id="semester-end"
                   type="date"
                   min={settings.semesterStart || undefined}
                   value={settings.semesterEnd}
                   onChange={(event) =>
-                    updateSetting(
-                      "semesterEnd",
-                      event.target.value,
-                    )
+                    updateSetting("semesterEnd", event.target.value)
                   }
                   className={`${inputClassName} [color-scheme:dark]`}
                 />
@@ -985,9 +967,7 @@ export default function SettingsClient() {
                       key={unit}
                       type="button"
                       aria-pressed={settings.weightUnit === unit}
-                      onClick={() =>
-                        updateSetting("weightUnit", unit)
-                      }
+                      onClick={() => updateSetting("weightUnit", unit)}
                       className={`flex min-h-10 items-center justify-center gap-2 rounded-xl text-sm font-semibold uppercase transition ${
                         settings.weightUnit === unit
                           ? "bg-white/10 text-cyan-200 shadow-sm"
@@ -1015,10 +995,7 @@ export default function SettingsClient() {
                     step={5}
                     value={settings.defaultRestSeconds}
                     onChange={(event) =>
-                      updateSetting(
-                        "defaultRestSeconds",
-                        event.target.value,
-                      )
+                      updateSetting("defaultRestSeconds", event.target.value)
                     }
                     className={`${inputClassName} pl-11 pr-20`}
                   />
@@ -1065,9 +1042,30 @@ export default function SettingsClient() {
                   ) : (
                     <Trash2 className="size-4" />
                   )}
-                  {isClearingHistory
-                    ? "Clearing…"
-                    : "Clear History"}
+                  {isClearingHistory ? "Clearing…" : "Clear History"}
+                </button>
+              </div>
+              <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+                <div>
+                  <p className="text-sm font-medium text-white/80">
+                    Clear Workout History
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-white/35">
+                    Permanently delete every workout and logged set
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearWorkoutHistory}
+                  disabled={isClearingWorkoutHistory}
+                  className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-red-400/25 bg-red-400/10 px-4 py-2.5 text-sm font-semibold text-red-200 transition hover:bg-red-400/15 disabled:cursor-not-allowed disabled:opacity-45 sm:w-auto"
+                >
+                  {isClearingWorkoutHistory ? (
+                    <LoaderCircle className="size-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="size-4" />
+                  )}
+                  {isClearingWorkoutHistory ? "Clearing…" : "Clear Workouts"}
                 </button>
               </div>
               <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6">
