@@ -18,8 +18,10 @@ type PushSubscriptionRow = {
   id: string;
   user_id: string;
   endpoint: string;
-  p256dh: string;
-  auth: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
 };
 
 function isAuthorized(request: Request, cronSecret: string) {
@@ -155,7 +157,7 @@ export async function GET(request: Request) {
   const { data: subscriptionsData, error: subscriptionsError } =
     await supabaseAdmin
       .from("push_subscriptions")
-      .select("id, user_id, endpoint, p256dh, auth")
+      .select("id, user_id, endpoint, keys")
       .in("user_id", assignedUserIds);
 
   if (subscriptionsError) {
@@ -202,10 +204,7 @@ export async function GET(request: Request) {
         await webpush.sendNotification(
           {
             endpoint: subscription.endpoint,
-            keys: {
-              p256dh: subscription.p256dh,
-              auth: subscription.auth,
-            },
+            keys: subscription.keys,
           },
           payload,
         );

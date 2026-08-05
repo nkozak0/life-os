@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { createClient as createSupabaseAdmin } from "@supabase/supabase-js";
 
 import { createClient } from "@/lib/supabase/server";
 
@@ -57,13 +58,31 @@ function parseSubscription(value: unknown) {
 
   return {
     endpoint,
-    p256dh,
-    auth,
+    keys: {
+      p256dh,
+      auth,
+    },
   };
 }
 
+function getAdminClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    return null;
+  }
+
+  return createSupabaseAdmin(supabaseUrl, serviceRoleKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
+}
+
 export async function POST(request: Request) {
-  const { supabase, userId } = await getAuthenticatedClient();
+  const { userId } = await getAuthenticatedClient();
 
   if (!userId) {
     return NextResponse.json(
@@ -92,14 +111,22 @@ export async function POST(request: Request) {
     );
   }
 
-  const { error } = await supabase
+  const supabaseAdmin = getAdminClient();
+
+  if (!supabaseAdmin) {
+    return NextResponse.json(
+      { error: "Push notifications are not configured on the server." },
+      { status: 500 },
+    );
+  }
+
+  const { error } = await supabaseAdmin
     .from("push_subscriptions")
     .upsert(
       {
         user_id: userId,
         endpoint: subscription.endpoint,
-        p256dh: subscription.p256dh,
-        auth: subscription.auth,
+        keys: subscription.keys,
       },
       {
         onConflict: "endpoint",
@@ -113,7 +140,12 @@ export async function POST(request: Request) {
       message: error.message,
     });
     return NextResponse.json(
-      { error: "The notification subscription could not be saved." },
+      {
+        error: error.message
+          ? `The notification subscription could not be saved: ${error.message}`
+          : "The notification subscription could not be saved.",
+        code: error.code,
+      },
       { status: 500 },
     );
   }
@@ -124,7 +156,7 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
-  const { supabase, userId } = await getAuthenticatedClient();
+  const { userId } = await getAuthenticatedClient();
 
   if (!userId) {
     return NextResponse.json(
@@ -158,7 +190,16 @@ export async function DELETE(request: Request) {
     );
   }
 
-  const { error } = await supabase
+  const supabaseAdmin = getAdminClient();
+
+  if (!supabaseAdmin) {
+    return NextResponse.json(
+      { error: "Push notifications are not configured on the server." },
+      { status: 500 },
+    );
+  }
+
+  const { error } = await supabaseAdmin
     .from("push_subscriptions")
     .delete()
     .eq("user_id", userId)

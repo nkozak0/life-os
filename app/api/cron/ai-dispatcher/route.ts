@@ -19,8 +19,10 @@ type PushSubscriptionRow = {
   id: string;
   user_id: string;
   endpoint: string;
-  p256dh: string;
-  auth: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
 };
 
 type BaselineKind = "morning" | "evening";
@@ -275,7 +277,7 @@ export async function GET(request: Request) {
   ];
   let subscriptionQuery = supabaseAdmin
     .from("push_subscriptions")
-    .select("id, user_id, endpoint, p256dh, auth");
+    .select("id, user_id, endpoint, keys");
 
   if (!baselineKind) {
     subscriptionQuery = subscriptionQuery.in(
@@ -375,10 +377,7 @@ export async function GET(request: Request) {
           await webpush.sendNotification(
             {
               endpoint: subscription.endpoint,
-              keys: {
-                p256dh: subscription.p256dh,
-                auth: subscription.auth,
-              },
+              keys: subscription.keys,
             },
             payload,
           );
@@ -514,4 +513,3 @@ export async function GET(request: Request) {
     markedSent,
   });
 }
-
