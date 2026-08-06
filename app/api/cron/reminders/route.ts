@@ -261,6 +261,8 @@ export async function GET(request: Request) {
       proactiveGenerated: 0,
       proactiveSent: 0,
       proactiveFailed: 0,
+      proactiveChatLogged: 0,
+      proactiveChatLogFailed: 0,
       checkinsUpdated: 0,
     });
   }
@@ -301,6 +303,8 @@ export async function GET(request: Request) {
   let proactiveFailed = 0;
   let proactiveWithoutSubscription = 0;
   let proactiveContextFailed = 0;
+  let proactiveChatLogged = 0;
+  let proactiveChatLogFailed = 0;
   let checkinsUpdated = 0;
 
   for (const reminder of dueReminders) {
@@ -519,6 +523,27 @@ Return only the notification body. Keep it under 240 characters, use a single co
       continue;
     }
 
+    const { error: chatMessageError } = await supabaseAdmin
+      .from("chat_messages")
+      .insert({
+        user_id: checkinUser.user_id,
+        role: "assistant",
+        content: notificationBody,
+      });
+
+    if (chatMessageError) {
+      proactiveFailed += 1;
+      proactiveChatLogFailed += 1;
+      console.error("Koda proactive chat-history insert failed:", {
+        userId: checkinUser.user_id,
+        code: chatMessageError.code,
+        message: chatMessageError.message,
+      });
+      continue;
+    }
+
+    proactiveChatLogged += 1;
+
     const { error: checkinUpdateError } = await supabaseAdmin
       .from("user_settings")
       .update({ last_ai_checkin: nowIso })
@@ -551,6 +576,8 @@ Return only the notification body. Keep it under 240 characters, use a single co
     proactiveFailed,
     proactiveWithoutSubscription,
     proactiveContextFailed,
+    proactiveChatLogged,
+    proactiveChatLogFailed,
     checkinsUpdated,
   });
 }

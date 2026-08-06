@@ -1,6 +1,13 @@
 "use client";
 
-import { type ComponentType, useEffect, useMemo, useState } from "react";
+import {
+  type ComponentType,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowRight,
@@ -36,6 +43,7 @@ type Workout = {
   routine_id: string;
   start_time: string;
   end_time: string | null;
+  notes: string | null;
 };
 
 type Routine = {
@@ -68,6 +76,8 @@ type HistoricalSet = {
   weight_lbs: number;
   reps: number;
 };
+
+type LoggedSet = HistoricalSet;
 
 type HistoricalSetDisplay = {
   weight: number;
@@ -109,6 +119,20 @@ type RestTimerServiceWorkerMessage =
     };
 
 const fallbackRestSeconds = 120;
+const workoutSessionStorageVersion = 1;
+
+type NotesSaveState = "idle" | "unsaved" | "saving" | "saved" | "error";
+
+type PersistedWorkoutSession = {
+  version: typeof workoutSessionStorageVersion;
+  workoutId: string;
+  sessionExercises: SessionExercise[];
+  setEntries: Record<string, SetEntry>;
+  exerciseNotes: Record<string, string>;
+  workoutNotes: string;
+  restEndsAt: number | null;
+  restExerciseName: string | null;
+};
 
 function getCurrentTimestamp() {
   return Date.now();
@@ -130,6 +154,176 @@ function getSetKey(exercise: SessionExercise, setNumber: number) {
 
 function getHistoricalSetKey(exerciseId: string, setNumber: number) {
   return `${exerciseId}:${setNumber}`;
+}
+
+function getWorkoutSessionStorageKey(workoutId: string) {
+  return `life-os:active-workout:${workoutId}`;
+}
+
+function sanitizeSetEntries(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const entries: Record<string, SetEntry> = {};
+
+  for (const [key, rawEntry] of Object.entries(value)) {
+    if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
+      return null;
+    }
+
+    const entry = rawEntry as Partial<SetEntry>;
+
+    if (
+      !Number.isInteger(entry.setNumber) ||
+      Number(entry.setNumber) < 1 ||
+      typeof entry.weight !== "string" ||
+      typeof entry.reps !== "string" ||
+      typeof entry.isComplete !== "boolean"
+    ) {
+      return null;
+    }
+
+    entries[key] = {
+      setNumber: Number(entry.setNumber),
+      weight: entry.weight,
+      reps: entry.reps,
+      isSaving: false,
+      isRemoving: false,
+      isComplete: entry.isComplete,
+      error: null,
+    };
+  }
+
+  return entries;
+}
+
+function sanitizeExerciseNotes(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+}
+
+function readPersistedWorkoutSession(workoutId: string) {
+  try {
+    const serialized = window.localStorage.getItem(
+      getWorkoutSessionStorageKey(workoutId),
+    );
+
+    if (!serialized) {
+      return null;
+    }
+
+    const candidate = JSON.parse(serialized) as Partial<PersistedWorkoutSession>;
+    const setEntries = sanitizeSetEntries(candidate.setEntries);
+
+    if (
+      candidate.version !== workoutSessionStorageVersion ||
+      candidate.workoutId !== workoutId ||
+      !Array.isArray(candidate.sessionExercises) ||
+      !setEntries ||
+      typeof candidate.workoutNotes !== "string"
+    ) {
+      return null;
+    }
+
+    return {
+      version: workoutSessionStorageVersion,
+      workoutId,
+      sessionExercises: candidate.sessionExercises,
+      setEntries,
+      exerciseNotes: sanitizeExerciseNotes(candidate.exerciseNotes),
+      workoutNotes: candidate.workoutNotes,
+      restEndsAt:
+        typeof candidate.restEndsAt === "number" &&
+        Number.isFinite(candidate.restEndsAt)
+          ? candidate.restEndsAt
+          : null,
+      restExerciseName:
+        typeof candidate.restExerciseName === "string"
+          ? candidate.restExerciseName
+          : null,
+    } satisfies PersistedWorkoutSession;
+  } catch (error) {
+    console.warn("Unable to restore the active workout snapshot:", error);
+    return null;
+  }
+}
+
+function writePersistedWorkoutSession(
+  workoutId: string,
+  session: Omit<PersistedWorkoutSession, "version" | "workoutId">,
+) {
+  try {
+    const persistedEntries = Object.fromEntries(
+      Object.entries(session.setEntries).map(([key, entry]) => [
+        key,
+        {
+          ...entry,
+          isSaving: false,
+          isRemoving: false,
+          error: null,
+        },
+      ]),
+    );
+
+    window.localStorage.setItem(
+      getWorkoutSessionStorageKey(workoutId),
+      JSON.stringify({
+        version: workoutSessionStorageVersion,
+        workoutId,
+        ...session,
+        setEntries: persistedEntries,
+      } satisfies PersistedWorkoutSession),
+    );
+  } catch (error) {
+    console.warn("Unable to save the active workout snapshot:", error);
+  }
+}
+
+function clearPersistedWorkoutSession(workoutId: string) {
+  try {
+    window.localStorage.removeItem(getWorkoutSessionStorageKey(workoutId));
+  } catch (error) {
+    console.warn("Unable to clear the active workout snapshot:", error);
+  }
+}
+
+function mergeLoggedSets(
+  exercises: SessionExercise[],
+  entries: Record<string, SetEntry>,
+  loggedSets: LoggedSet[],
+) {
+  const mergedEntries = { ...entries };
+
+  for (const loggedSet of loggedSets) {
+    const exercise = exercises.find(
+      (candidate) => candidate.exercise_id === loggedSet.exercise_id,
+    );
+
+    if (!exercise) {
+      continue;
+    }
+
+    const setKey = getSetKey(exercise, loggedSet.set_number);
+    mergedEntries[setKey] = {
+      setNumber: loggedSet.set_number,
+      weight: String(loggedSet.weight_lbs),
+      reps: String(loggedSet.reps),
+      isSaving: false,
+      isRemoving: false,
+      isComplete: true,
+      error: null,
+    };
+  }
+
+  return mergedEntries;
 }
 
 function buildTemplateStructure(
@@ -225,6 +419,12 @@ export default function LiveWorkoutPage() {
   const [exerciseNotes, setExerciseNotes] = useState<Record<string, string>>(
     {},
   );
+  const [workoutNotes, setWorkoutNotes] = useState("");
+  const [notesSaveState, setNotesSaveState] =
+    useState<NotesSaveState>("idle");
+  const [notesSaveError, setNotesSaveError] = useState<string | null>(null);
+  const [isSessionHydrated, setIsSessionHydrated] = useState(false);
+  const lastSavedWorkoutNotesRef = useRef("");
   const [historicalSets, setHistoricalSets] = useState<
     Record<string, HistoricalSetDisplay>
   >({});
@@ -247,18 +447,36 @@ export default function LiveWorkoutPage() {
     () => !structuresMatch(originalTemplateStructure, currentTemplateStructure),
     [currentTemplateStructure, originalTemplateStructure],
   );
+  const persistWorkoutNotesToDatabase = useCallback(
+    async (notes: string, signal?: AbortSignal) => {
+      let request = supabase
+        .from("workouts")
+        .update({ notes })
+        .eq("id", workoutId)
+        .is("end_time", null)
+        .select("id");
+
+      if (signal) {
+        request = request.abortSignal(signal);
+      }
+
+      return await request.single();
+    },
+    [supabase, workoutId],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
 
     async function fetchSession() {
       setIsLoading(true);
+      setIsSessionHydrated(false);
       setLoadError(null);
 
       try {
         const { data: workoutData, error: workoutError } = await supabase
           .from("workouts")
-          .select("id, routine_id, start_time, end_time")
+          .select("id, routine_id, start_time, end_time, notes")
           .eq("id", workoutId)
           .abortSignal(controller.signal)
           .single();
@@ -267,7 +485,12 @@ export default function LiveWorkoutPage() {
           throw workoutError ?? new Error("Workout session not found.");
         }
 
-        const [routineResult, exercisesResult, settingsResult] =
+        const [
+          routineResult,
+          exercisesResult,
+          settingsResult,
+          loggedSetsResult,
+        ] =
           await Promise.all([
             supabase
               .from("routines")
@@ -299,6 +522,12 @@ export default function LiveWorkoutPage() {
               .select("default_rest_seconds")
               .abortSignal(controller.signal)
               .maybeSingle(),
+            supabase
+              .from("workout_sets")
+              .select("exercise_id, set_number, weight_lbs, reps")
+              .eq("workout_id", workoutId)
+              .order("set_number", { ascending: true })
+              .abortSignal(controller.signal),
           ]);
 
         if (routineResult.error || !routineResult.data) {
@@ -317,6 +546,10 @@ export default function LiveWorkoutPage() {
             "Default rest timer lookup failed:",
             settingsResult.error,
           );
+        }
+
+        if (loggedSetsResult.error) {
+          throw loggedSetsResult.error;
         }
 
         if (controller.signal.aborted) {
@@ -388,12 +621,36 @@ export default function LiveWorkoutPage() {
           }
         }
 
+        const persistedSession = workoutData.end_time
+          ? null
+          : readPersistedWorkoutSession(workoutId);
+        const restoredExercises =
+          persistedSession?.sessionExercises ?? exercises;
+        const restoredEntries = mergeLoggedSets(
+          restoredExercises,
+          persistedSession?.setEntries ?? initialSetEntries,
+          (loggedSetsResult.data ?? []) as LoggedSet[],
+        );
+        const savedWorkoutNotes = workoutData.notes ?? "";
+        const restoredWorkoutNotes =
+          persistedSession?.workoutNotes ?? savedWorkoutNotes;
+
+        lastSavedWorkoutNotesRef.current = savedWorkoutNotes;
         setWorkout(workoutData as Workout);
         setRoutine(routineResult.data as Routine);
-        setSessionExercises(exercises);
-        setSetEntries(initialSetEntries);
+        setSessionExercises(restoredExercises);
+        setSetEntries(restoredEntries);
+        setExerciseNotes(persistedSession?.exerciseNotes ?? {});
+        setWorkoutNotes(restoredWorkoutNotes);
+        setNotesSaveState(
+          restoredWorkoutNotes === savedWorkoutNotes ? "saved" : "unsaved",
+        );
+        setNotesSaveError(null);
+        setRestEndsAt(persistedSession?.restEndsAt ?? null);
+        setRestExerciseName(persistedSession?.restExerciseName ?? null);
         setHistoricalSets(historicalSetEntries);
         setOriginalTemplateStructure(buildTemplateStructure(exercises));
+        setIsSessionHydrated(true);
       } catch (error) {
         if (
           controller.signal.aborted ||
@@ -415,6 +672,92 @@ export default function LiveWorkoutPage() {
 
     return () => controller.abort();
   }, [supabase, workoutId]);
+
+  useEffect(() => {
+    if (
+      !isSessionHydrated ||
+      !workout ||
+      workout.end_time ||
+      workoutNotes === lastSavedWorkoutNotesRef.current
+    ) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const noteValue = workoutNotes;
+    const timeoutId = window.setTimeout(async () => {
+      setNotesSaveState("saving");
+      setNotesSaveError(null);
+
+      const { error } = await persistWorkoutNotesToDatabase(
+        noteValue,
+        controller.signal,
+      );
+
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      if (error) {
+        console.error("Workout notes update failed:", {
+          workoutId,
+          code: error.code,
+          message: error.message,
+        });
+        setNotesSaveState("error");
+        setNotesSaveError(error.message);
+        return;
+      }
+
+      lastSavedWorkoutNotesRef.current = noteValue;
+      setWorkout((current) =>
+        current ? { ...current, notes: noteValue } : current,
+      );
+      setNotesSaveState("saved");
+    }, 700);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [
+    isSessionHydrated,
+    persistWorkoutNotesToDatabase,
+    workout,
+    workoutId,
+    workoutNotes,
+  ]);
+
+  useEffect(() => {
+    if (
+      !isSessionHydrated ||
+      !workout ||
+      workout.end_time ||
+      workoutSummary
+    ) {
+      return;
+    }
+
+    writePersistedWorkoutSession(workoutId, {
+      sessionExercises,
+      setEntries,
+      exerciseNotes,
+      workoutNotes,
+      restEndsAt,
+      restExerciseName,
+    });
+  }, [
+    exerciseNotes,
+    isSessionHydrated,
+    restEndsAt,
+    restExerciseName,
+    sessionExercises,
+    setEntries,
+    workout,
+    workoutId,
+    workoutNotes,
+    workoutSummary,
+  ]);
 
   useEffect(() => {
     if (!workout?.start_time) {
@@ -507,25 +850,55 @@ export default function LiveWorkoutPage() {
     }));
   };
 
-  const postRestTimerMessage = (message: RestTimerServiceWorkerMessage) => {
-    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+  const postRestTimerMessage = useCallback(
+    (message: RestTimerServiceWorkerMessage) => {
+      if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+        return;
+      }
+
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage(message);
+        return;
+      }
+
+      void navigator.serviceWorker
+        .getRegistration()
+        .then((registration) => {
+          registration?.active?.postMessage(message);
+        })
+        .catch((error) => {
+          console.warn("Unable to reach the rest timer service worker:", error);
+        });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (
+      !isSessionHydrated ||
+      restEndsAt === null ||
+      restEndsAt <= Date.now() ||
+      !restExerciseName
+    ) {
       return;
     }
 
-    if (navigator.serviceWorker.controller) {
-      navigator.serviceWorker.controller.postMessage(message);
-      return;
-    }
-
-    void navigator.serviceWorker
-      .getRegistration()
-      .then((registration) => {
-        registration?.active?.postMessage(message);
-      })
-      .catch((error) => {
-        console.warn("Unable to reach the rest timer service worker:", error);
-      });
-  };
+    const remainingSeconds = Math.max(
+      1,
+      Math.ceil((restEndsAt - Date.now()) / 1000),
+    );
+    postRestTimerMessage({ type: "CANCEL_REST_TIMER" });
+    postRestTimerMessage({
+      type: "START_REST_TIMER",
+      seconds: remainingSeconds,
+      exerciseName: restExerciseName,
+    });
+  }, [
+    isSessionHydrated,
+    postRestTimerMessage,
+    restEndsAt,
+    restExerciseName,
+  ]);
 
   const cancelRestTimer = () => {
     setRestSeconds(null);
@@ -550,14 +923,6 @@ export default function LiveWorkoutPage() {
     setRestExerciseName(exerciseName);
     setRestSeconds(seconds);
     setRestEndsAt(getCurrentTimestamp() + seconds * 1000);
-    postRestTimerMessage({
-      type: "CANCEL_REST_TIMER",
-    });
-    postRestTimerMessage({
-      type: "START_REST_TIMER",
-      seconds,
-      exerciseName,
-    });
   };
 
   const addSet = (exercise: SessionExercise) => {
@@ -880,6 +1245,22 @@ export default function LiveWorkoutPage() {
         setOriginalTemplateStructure(currentTemplateStructure);
       }
 
+      if (workoutNotes !== lastSavedWorkoutNotesRef.current) {
+        setNotesSaveState("saving");
+        setNotesSaveError(null);
+        const { error: notesError } =
+          await persistWorkoutNotesToDatabase(workoutNotes);
+
+        if (notesError) {
+          throw new Error(
+            `Your workout notes could not be saved: ${notesError.message}`,
+          );
+        }
+
+        lastSavedWorkoutNotesRef.current = workoutNotes;
+        setNotesSaveState("saved");
+      }
+
       const summary = await requestWorkoutSummary();
       setWorkout((current) =>
         current
@@ -892,6 +1273,7 @@ export default function LiveWorkoutPage() {
       cancelRestTimer();
       setWorkoutSummary(summary);
       setIsTemplateSyncOpen(false);
+      clearPersistedWorkoutSession(workoutId);
     } catch (error) {
       const message = getErrorMessage(error, "Unable to finish this workout.");
 
@@ -951,6 +1333,7 @@ export default function LiveWorkoutPage() {
       return;
     }
 
+    clearPersistedWorkoutSession(workoutId);
     router.push("/workouts");
     router.refresh();
   };
@@ -1096,6 +1479,75 @@ export default function LiveWorkoutPage() {
             {completedSets} / {totalSets} sets
           </span>
         </div>
+
+        <section className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4 backdrop-blur-lg">
+          <div className="flex items-center justify-between gap-3">
+            <label
+              htmlFor="workout-session-notes"
+              className="flex items-center gap-2 text-sm font-medium text-white/70"
+            >
+              <MessageSquareText className="h-4 w-4 text-violet-300/70" />
+              Session notes
+            </label>
+            <span
+              aria-live="polite"
+              className={`inline-flex items-center gap-1.5 text-xs ${
+                notesSaveState === "error"
+                  ? "text-red-300"
+                  : notesSaveState === "saved"
+                    ? "text-emerald-300/75"
+                    : "text-white/35"
+              }`}
+            >
+              {notesSaveState === "saving" ? (
+                <>
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                  Saving
+                </>
+              ) : notesSaveState === "saved" ? (
+                <>
+                  <Check className="h-3.5 w-3.5" />
+                  Saved
+                </>
+              ) : notesSaveState === "error" ? (
+                <>
+                  <CircleAlert className="h-3.5 w-3.5" />
+                  Save failed
+                </>
+              ) : notesSaveState === "unsaved" ? (
+                "Unsaved"
+              ) : null}
+            </span>
+          </div>
+          <textarea
+            id="workout-session-notes"
+            value={workoutNotes}
+            onChange={(event) => {
+              const nextNotes = event.target.value;
+              setWorkoutNotes(nextNotes);
+              setNotesSaveError(null);
+              setNotesSaveState(
+                nextNotes === lastSavedWorkoutNotesRef.current
+                  ? "saved"
+                  : "unsaved",
+              );
+            }}
+            disabled={Boolean(workout.end_time)}
+            rows={3}
+            maxLength={4000}
+            placeholder="How did the session feel? Add cues, wins, or anything to remember."
+            className="mt-3 w-full resize-y rounded-2xl border border-white/10 bg-black/15 px-4 py-3 text-sm leading-6 text-white outline-none transition placeholder:text-white/20 focus:border-violet-300/35 focus:ring-4 focus:ring-violet-400/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+          />
+          {notesSaveError ? (
+            <p className="mt-2 text-xs leading-5 text-red-300">
+              {notesSaveError}
+            </p>
+          ) : (
+            <p className="mt-2 text-[11px] text-white/25">
+              Notes save automatically after you stop typing.
+            </p>
+          )}
+        </section>
 
         {workout.end_time ? (
           <div className="mt-4 flex items-center gap-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
