@@ -79,6 +79,12 @@ type HistoricalSet = {
 
 type LoggedSet = HistoricalSet;
 
+type WorkoutExerciseNoteRow = {
+  exercise_id: string;
+  sort_order: number;
+  notes: string;
+};
+
 type HistoricalSetDisplay = {
   weight: number;
   reps: number;
@@ -419,12 +425,23 @@ export default function LiveWorkoutPage() {
   const [exerciseNotes, setExerciseNotes] = useState<Record<string, string>>(
     {},
   );
+  const [exerciseNoteSaveStates, setExerciseNoteSaveStates] = useState<
+    Record<string, NotesSaveState>
+  >({});
+  const [exerciseNoteSaveErrors, setExerciseNoteSaveErrors] = useState<
+    Record<string, string | null>
+  >({});
+  const [openExerciseNoteKey, setOpenExerciseNoteKey] = useState<string | null>(
+    null,
+  );
   const [workoutNotes, setWorkoutNotes] = useState("");
+  const [showGlobalNotes, setShowGlobalNotes] = useState(false);
   const [notesSaveState, setNotesSaveState] =
     useState<NotesSaveState>("idle");
   const [notesSaveError, setNotesSaveError] = useState<string | null>(null);
   const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const lastSavedWorkoutNotesRef = useRef("");
+  const lastSavedExerciseNotesRef = useRef<Record<string, string>>({});
   const [historicalSets, setHistoricalSets] = useState<
     Record<string, HistoricalSetDisplay>
   >({});
@@ -464,6 +481,36 @@ export default function LiveWorkoutPage() {
     },
     [supabase, workoutId],
   );
+  const persistExerciseNoteToDatabase = useCallback(
+    async (
+      exercise: SessionExercise,
+      notes: string,
+      signal?: AbortSignal,
+    ) => {
+      let request = supabase
+        .from("workout_exercise_notes")
+        .upsert(
+          {
+            workout_id: workoutId,
+            exercise_id: exercise.exercise_id,
+            sort_order: exercise.sort_order,
+            notes,
+            updated_at: new Date().toISOString(),
+          },
+          {
+            onConflict: "workout_id,exercise_id,sort_order",
+          },
+        )
+        .select("id");
+
+      if (signal) {
+        request = request.abortSignal(signal);
+      }
+
+      return await request.single();
+    },
+    [supabase, workoutId],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -490,6 +537,7 @@ export default function LiveWorkoutPage() {
           exercisesResult,
           settingsResult,
           loggedSetsResult,
+          exerciseNotesResult,
         ] =
           await Promise.all([
             supabase
@@ -528,6 +576,11 @@ export default function LiveWorkoutPage() {
               .eq("workout_id", workoutId)
               .order("set_number", { ascending: true })
               .abortSignal(controller.signal),
+            supabase
+              .from("workout_exercise_notes")
+              .select("exercise_id, sort_order, notes")
+              .eq("workout_id", workoutId)
+              .abortSignal(controller.signal),
           ]);
 
         if (routineResult.error || !routineResult.data) {
@@ -550,6 +603,13 @@ export default function LiveWorkoutPage() {
 
         if (loggedSetsResult.error) {
           throw loggedSetsResult.error;
+        }
+
+        if (exerciseNotesResult.error) {
+          console.warn(
+            "Exercise notes lookup failed:",
+            exerciseNotesResult.error,
+          );
         }
 
         if (controller.signal.aborted) {
@@ -634,13 +694,36 @@ export default function LiveWorkoutPage() {
         const savedWorkoutNotes = workoutData.notes ?? "";
         const restoredWorkoutNotes =
           persistedSession?.workoutNotes ?? savedWorkoutNotes;
+        const savedExerciseNotes = Object.fromEntries(
+          (
+            (exerciseNotesResult.data ?? []) as WorkoutExerciseNoteRow[]
+          ).map((note) => [
+            `${note.exercise_id}:${note.sort_order}`,
+            note.notes,
+          ]),
+        );
+        const restoredExerciseNotes = persistedSession
+          ? {
+              ...savedExerciseNotes,
+              ...persistedSession.exerciseNotes,
+            }
+          : savedExerciseNotes;
+        const restoredExerciseNoteStates = Object.fromEntries(
+          Object.entries(restoredExerciseNotes).map(([key, note]) => [
+            key,
+            note === (savedExerciseNotes[key] ?? "") ? "saved" : "unsaved",
+          ]),
+        ) as Record<string, NotesSaveState>;
 
         lastSavedWorkoutNotesRef.current = savedWorkoutNotes;
+        lastSavedExerciseNotesRef.current = savedExerciseNotes;
         setWorkout(workoutData as Workout);
         setRoutine(routineResult.data as Routine);
         setSessionExercises(restoredExercises);
         setSetEntries(restoredEntries);
-        setExerciseNotes(persistedSession?.exerciseNotes ?? {});
+        setExerciseNotes(restoredExerciseNotes);
+        setExerciseNoteSaveStates(restoredExerciseNoteStates);
+        setExerciseNoteSaveErrors({});
         setWorkoutNotes(restoredWorkoutNotes);
         setNotesSaveState(
           restoredWorkoutNotes === savedWorkoutNotes ? "saved" : "unsaved",
@@ -726,6 +809,94 @@ export default function LiveWorkoutPage() {
     workout,
     workoutId,
     workoutNotes,
+  ]);
+
+  useEffect(() => {
+    if (!isSessionHydrated || !workout || workout.end_time) {
+      return;
+    }
+
+    const dirtyNotes = sessionExercises.flatMap((exercise) => {
+      const exerciseKey = getExerciseKey(exercise);
+      const note = exerciseNotes[exerciseKey] ?? "";
+
+      return note !==
+        (lastSavedExerciseNotesRef.current[exerciseKey] ?? "")
+        ? [{ exercise, exerciseKey, note }]
+        : [];
+    });
+
+    if (dirtyNotes.length === 0) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(async () => {
+      setExerciseNoteSaveStates((current) => ({
+        ...current,
+        ...Object.fromEntries(
+          dirtyNotes.map(({ exerciseKey }) => [exerciseKey, "saving"]),
+        ),
+      }));
+
+      await Promise.all(
+        dirtyNotes.map(async ({ exercise, exerciseKey, note }) => {
+          const { error } = await persistExerciseNoteToDatabase(
+            exercise,
+            note,
+            controller.signal,
+          );
+
+          if (controller.signal.aborted) {
+            return;
+          }
+
+          if (error) {
+            console.error("Exercise note update failed:", {
+              workoutId,
+              exerciseId: exercise.exercise_id,
+              sortOrder: exercise.sort_order,
+              code: error.code,
+              message: error.message,
+            });
+            setExerciseNoteSaveStates((current) => ({
+              ...current,
+              [exerciseKey]: "error",
+            }));
+            setExerciseNoteSaveErrors((current) => ({
+              ...current,
+              [exerciseKey]: error.message,
+            }));
+            return;
+          }
+
+          lastSavedExerciseNotesRef.current = {
+            ...lastSavedExerciseNotesRef.current,
+            [exerciseKey]: note,
+          };
+          setExerciseNoteSaveStates((current) => ({
+            ...current,
+            [exerciseKey]: "saved",
+          }));
+          setExerciseNoteSaveErrors((current) => ({
+            ...current,
+            [exerciseKey]: null,
+          }));
+        }),
+      );
+    }, 700);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [
+    exerciseNotes,
+    isSessionHydrated,
+    persistExerciseNoteToDatabase,
+    sessionExercises,
+    workout,
+    workoutId,
   ]);
 
   useEffect(() => {
@@ -1019,16 +1190,9 @@ export default function LiveWorkoutPage() {
 
   const addExerciseNote = (exercise: SessionExercise) => {
     const exerciseKey = getExerciseKey(exercise);
-    const currentNote = exerciseNotes[exerciseKey] ?? "";
-    const note = window.prompt("Exercise note", currentNote);
-
-    if (note !== null) {
-      setExerciseNotes((current) => ({
-        ...current,
-        [exerciseKey]: note.trim(),
-      }));
-    }
-
+    setOpenExerciseNoteKey((current) =>
+      current === exerciseKey ? null : exerciseKey,
+    );
     setOpenExerciseMenuKey(null);
   };
 
@@ -1243,6 +1407,58 @@ export default function LiveWorkoutPage() {
         }
 
         setOriginalTemplateStructure(currentTemplateStructure);
+      }
+
+      const unsavedExerciseNotes = sessionExercises.flatMap((exercise) => {
+        const exerciseKey = getExerciseKey(exercise);
+        const note = exerciseNotes[exerciseKey] ?? "";
+
+        return note !==
+          (lastSavedExerciseNotesRef.current[exerciseKey] ?? "")
+          ? [{ exercise, exerciseKey, note }]
+          : [];
+      });
+
+      for (const {
+        exercise,
+        exerciseKey,
+        note,
+      } of unsavedExerciseNotes) {
+        setExerciseNoteSaveStates((current) => ({
+          ...current,
+          [exerciseKey]: "saving",
+        }));
+        const { error: exerciseNoteError } =
+          await persistExerciseNoteToDatabase(exercise, note);
+
+        if (exerciseNoteError) {
+          setExerciseNoteSaveStates((current) => ({
+            ...current,
+            [exerciseKey]: "error",
+          }));
+          setExerciseNoteSaveErrors((current) => ({
+            ...current,
+            [exerciseKey]: exerciseNoteError.message,
+          }));
+          throw new Error(
+            `Your note for ${
+              getExercise(exercise.exercises)?.name ?? "an exercise"
+            } could not be saved: ${exerciseNoteError.message}`,
+          );
+        }
+
+        lastSavedExerciseNotesRef.current = {
+          ...lastSavedExerciseNotesRef.current,
+          [exerciseKey]: note,
+        };
+        setExerciseNoteSaveStates((current) => ({
+          ...current,
+          [exerciseKey]: "saved",
+        }));
+        setExerciseNoteSaveErrors((current) => ({
+          ...current,
+          [exerciseKey]: null,
+        }));
       }
 
       if (workoutNotes !== lastSavedWorkoutNotesRef.current) {
@@ -1480,74 +1696,105 @@ export default function LiveWorkoutPage() {
           </span>
         </div>
 
-        <section className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4 backdrop-blur-lg">
-          <div className="flex items-center justify-between gap-3">
-            <label
-              htmlFor="workout-session-notes"
-              className="flex items-center gap-2 text-sm font-medium text-white/70"
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setShowGlobalNotes((current) => !current)}
+            aria-expanded={showGlobalNotes}
+            aria-controls="workout-general-note-panel"
+            className="inline-flex min-h-10 items-center gap-2 rounded-xl px-3 text-xs font-medium text-white/35 transition hover:bg-white/5 hover:text-white/65"
+          >
+            {showGlobalNotes ? (
+              <X className="h-3.5 w-3.5" />
+            ) : (
+              <MessageSquareText className="h-3.5 w-3.5" />
+            )}
+            {showGlobalNotes
+              ? "Hide General Note"
+              : workoutNotes
+                ? "View General Note"
+                : "Add General Note"}
+          </button>
+        </div>
+
+        <AnimatePresence initial={false}>
+          {showGlobalNotes ? (
+            <motion.section
+              id="workout-general-note-panel"
+              initial={{ opacity: 0, height: 0, y: -6 }}
+              animate={{ opacity: 1, height: "auto", y: 0 }}
+              exit={{ opacity: 0, height: 0, y: -6 }}
+              className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] p-4 backdrop-blur-lg"
             >
-              <MessageSquareText className="h-4 w-4 text-violet-300/70" />
-              Session notes
-            </label>
-            <span
-              aria-live="polite"
-              className={`inline-flex items-center gap-1.5 text-xs ${
-                notesSaveState === "error"
-                  ? "text-red-300"
-                  : notesSaveState === "saved"
-                    ? "text-emerald-300/75"
-                    : "text-white/35"
-              }`}
-            >
-              {notesSaveState === "saving" ? (
-                <>
-                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                  Saving
-                </>
-              ) : notesSaveState === "saved" ? (
-                <>
-                  <Check className="h-3.5 w-3.5" />
-                  Saved
-                </>
-              ) : notesSaveState === "error" ? (
-                <>
-                  <CircleAlert className="h-3.5 w-3.5" />
-                  Save failed
-                </>
-              ) : notesSaveState === "unsaved" ? (
-                "Unsaved"
-              ) : null}
-            </span>
-          </div>
-          <textarea
-            id="workout-session-notes"
-            value={workoutNotes}
-            onChange={(event) => {
-              const nextNotes = event.target.value;
-              setWorkoutNotes(nextNotes);
-              setNotesSaveError(null);
-              setNotesSaveState(
-                nextNotes === lastSavedWorkoutNotesRef.current
-                  ? "saved"
-                  : "unsaved",
-              );
-            }}
-            disabled={Boolean(workout.end_time)}
-            rows={3}
-            maxLength={4000}
-            placeholder="How did the session feel? Add cues, wins, or anything to remember."
-            className="mt-3 w-full resize-y rounded-2xl border border-white/10 bg-black/15 px-4 py-3 text-sm leading-6 text-white outline-none transition placeholder:text-white/20 focus:border-violet-300/35 focus:ring-4 focus:ring-violet-400/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
-          />
-          {notesSaveError ? (
-            <p className="mt-2 text-xs leading-5 text-red-300">
-              {notesSaveError}
-            </p>
-          ) : (
-            <p className="mt-2 text-[11px] text-white/25">
-              Notes save automatically after you stop typing.
-            </p>
-          )}
-        </section>
+              <div className="flex items-center justify-between gap-3">
+                <label
+                  htmlFor="workout-session-notes"
+                  className="flex items-center gap-2 text-sm font-medium text-white/70"
+                >
+                  <MessageSquareText className="h-4 w-4 text-violet-300/70" />
+                  General workout note
+                </label>
+                <span
+                  aria-live="polite"
+                  className={`inline-flex items-center gap-1.5 text-xs ${
+                    notesSaveState === "error"
+                      ? "text-red-300"
+                      : notesSaveState === "saved"
+                        ? "text-emerald-300/75"
+                        : "text-white/35"
+                  }`}
+                >
+                  {notesSaveState === "saving" ? (
+                    <>
+                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                      Saving
+                    </>
+                  ) : notesSaveState === "saved" ? (
+                    <>
+                      <Check className="h-3.5 w-3.5" />
+                      Saved
+                    </>
+                  ) : notesSaveState === "error" ? (
+                    <>
+                      <CircleAlert className="h-3.5 w-3.5" />
+                      Save failed
+                    </>
+                  ) : notesSaveState === "unsaved" ? (
+                    "Unsaved"
+                  ) : null}
+                </span>
+              </div>
+              <textarea
+                id="workout-session-notes"
+                value={workoutNotes}
+                onChange={(event) => {
+                  const nextNotes = event.target.value;
+                  setWorkoutNotes(nextNotes);
+                  setNotesSaveError(null);
+                  setNotesSaveState(
+                    nextNotes === lastSavedWorkoutNotesRef.current
+                      ? "saved"
+                      : "unsaved",
+                  );
+                }}
+                disabled={Boolean(workout.end_time)}
+                rows={3}
+                maxLength={4000}
+                placeholder="How did the overall session feel?"
+                className="mt-3 w-full resize-y rounded-2xl border border-white/10 bg-black/15 px-4 py-3 text-sm leading-6 text-white outline-none transition placeholder:text-white/20 focus:border-violet-300/35 focus:ring-4 focus:ring-violet-400/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+              />
+              {notesSaveError ? (
+                <p className="mt-2 text-xs leading-5 text-red-300">
+                  {notesSaveError}
+                </p>
+              ) : (
+                <p className="mt-2 text-[11px] text-white/25">
+                  Saves automatically after you stop typing.
+                </p>
+              )}
+            </motion.section>
+          ) : null}
+        </AnimatePresence>
 
         {workout.end_time ? (
           <div className="mt-4 flex items-center gap-3 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
@@ -1574,6 +1821,10 @@ export default function LiveWorkoutPage() {
                 ([, first], [, second]) => first.setNumber - second.setNumber,
               );
             const exerciseNote = exerciseNotes[exerciseKey];
+            const exerciseNoteSaveState =
+              exerciseNoteSaveStates[exerciseKey] ?? "idle";
+            const exerciseNoteSaveError =
+              exerciseNoteSaveErrors[exerciseKey];
 
             return (
               <motion.article
@@ -1632,7 +1883,7 @@ export default function LiveWorkoutPage() {
                         >
                           <ExerciseMenuButton
                             icon={MessageSquareText}
-                            label="Add Note"
+                            label={exerciseNote ? "Edit Note" : "Add Note"}
                             onClick={() => addExerciseNote(sessionExercise)}
                           />
                           <ExerciseMenuButton
@@ -1657,12 +1908,119 @@ export default function LiveWorkoutPage() {
                   </div>
                 </div>
 
-                {exerciseNote ? (
-                  <div className="flex items-start gap-2 border-b border-white/[0.07] bg-white/[0.025] px-5 py-3 text-xs leading-5 text-white/45">
-                    <MessageSquareText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-300/60" />
-                    {exerciseNote}
-                  </div>
-                ) : null}
+                <AnimatePresence initial={false}>
+                  {openExerciseNoteKey === exerciseKey ? (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden border-b border-white/[0.07] bg-violet-300/[0.035]"
+                    >
+                      <div className="px-5 py-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <label
+                            htmlFor={`exercise-note-${exerciseKey}`}
+                            className="flex items-center gap-2 text-xs font-medium text-white/55"
+                          >
+                            <MessageSquareText className="h-3.5 w-3.5 text-violet-300/70" />
+                            Note for{" "}
+                            {exercise?.name ?? "this exercise"}
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <span
+                              aria-live="polite"
+                              className={`inline-flex items-center gap-1 text-[11px] ${
+                                exerciseNoteSaveState === "error"
+                                  ? "text-red-300"
+                                  : exerciseNoteSaveState === "saved"
+                                    ? "text-emerald-300/75"
+                                    : "text-white/30"
+                              }`}
+                            >
+                              {exerciseNoteSaveState === "saving" ? (
+                                <>
+                                  <LoaderCircle className="h-3 w-3 animate-spin" />
+                                  Saving
+                                </>
+                              ) : exerciseNoteSaveState === "saved" ? (
+                                <>
+                                  <Check className="h-3 w-3" />
+                                  Saved
+                                </>
+                              ) : exerciseNoteSaveState === "error" ? (
+                                <>
+                                  <CircleAlert className="h-3 w-3" />
+                                  Save failed
+                                </>
+                              ) : exerciseNoteSaveState === "unsaved" ? (
+                                "Unsaved"
+                              ) : null}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setOpenExerciseNoteKey(null)}
+                              aria-label={`Close note for ${exercise?.name ?? "exercise"}`}
+                              className="grid size-8 place-items-center rounded-lg text-white/30 transition hover:bg-white/10 hover:text-white/60"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                        <textarea
+                          id={`exercise-note-${exerciseKey}`}
+                          value={exerciseNote ?? ""}
+                          onChange={(event) => {
+                            const nextNote = event.target.value;
+                            setExerciseNotes((current) => ({
+                              ...current,
+                              [exerciseKey]: nextNote,
+                            }));
+                            setExerciseNoteSaveStates((current) => ({
+                              ...current,
+                              [exerciseKey]:
+                                nextNote ===
+                                (lastSavedExerciseNotesRef.current[
+                                  exerciseKey
+                                ] ?? "")
+                                  ? "saved"
+                                  : "unsaved",
+                            }));
+                            setExerciseNoteSaveErrors((current) => ({
+                              ...current,
+                              [exerciseKey]: null,
+                            }));
+                          }}
+                          disabled={Boolean(workout.end_time)}
+                          rows={3}
+                          maxLength={4000}
+                          placeholder="Add cues, setup reminders, or how this movement felt."
+                          className="mt-3 w-full resize-y rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm leading-6 text-white outline-none transition placeholder:text-white/20 focus:border-violet-300/35 focus:ring-4 focus:ring-violet-400/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                        />
+                        {exerciseNoteSaveError ? (
+                          <p className="mt-2 text-xs leading-5 text-red-300">
+                            {exerciseNoteSaveError}
+                          </p>
+                        ) : (
+                          <p className="mt-2 text-[11px] text-white/25">
+                            Saves to this exercise in this workout only.
+                          </p>
+                        )}
+                      </div>
+                    </motion.div>
+                  ) : exerciseNote ? (
+                    <motion.button
+                      type="button"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      onClick={() => setOpenExerciseNoteKey(exerciseKey)}
+                      className="flex w-full items-start gap-2 border-b border-white/[0.07] bg-white/[0.025] px-5 py-3 text-left text-xs leading-5 text-white/45 transition hover:bg-white/[0.045] hover:text-white/60"
+                    >
+                      <MessageSquareText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-300/60" />
+                      <span className="line-clamp-2">{exerciseNote}</span>
+                    </motion.button>
+                  ) : null}
+                </AnimatePresence>
 
                 <div className="px-3 py-3 sm:px-5 sm:py-4">
                   <div className="grid grid-cols-[2rem_minmax(0,1fr)_minmax(0,0.8fr)_5.75rem_2.75rem] gap-2 px-2 pb-2 text-[10px] font-medium uppercase tracking-wider text-white/30 sm:grid-cols-[3rem_minmax(0,1fr)_minmax(0,1fr)_8rem_2.75rem]">

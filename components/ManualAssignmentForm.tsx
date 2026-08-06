@@ -9,13 +9,16 @@ import {
   Plus,
   X,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 
+import type { Assignment } from "@/lib/assignments/types";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 
 type ManualAssignmentFormProps = {
   isOpen: boolean;
   onClose: () => void;
+  onCreated?: (assignment: Assignment) => void;
 };
 
 type Feedback =
@@ -24,10 +27,25 @@ type Feedback =
 
 const initialFeedback: Feedback = { type: "idle", message: "" };
 
+function getErrorMessage(error: unknown, fallback: string) {
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+
+  return fallback;
+}
+
 export function ManualAssignmentForm({
   isOpen,
   onClose,
+  onCreated,
 }: ManualAssignmentFormProps) {
+  const router = useRouter();
   const [assignmentName, setAssignmentName] = useState("");
   const [course, setCourse] = useState("");
   const [dueDate, setDueDate] = useState("");
@@ -95,27 +113,45 @@ export function ManualAssignmentForm({
 
     try {
       const supabase = getSupabaseClient();
-      const { error } = await supabase.from("assignments").insert({
-        title: cleanTitle,
-        course: cleanCourse,
-        due_date: parsedDueDate.toISOString(),
-        source: "manual",
-      });
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
 
-      if (error) throw error;
+      if (userError || !user) {
+        throw userError ?? new Error("You must be signed in.");
+      }
+
+      const { data, error } = await supabase
+        .from("assignments")
+        .insert({
+          user_id: user.id,
+          title: cleanTitle,
+          course: cleanCourse,
+          due_date: parsedDueDate.toISOString(),
+          source: "manual",
+        })
+        .select("id, title, course, due_date, is_completed, source")
+        .single();
+
+      if (error || !data) {
+        throw error ?? new Error("The saved assignment could not be loaded.");
+      }
 
       setAssignmentName("");
       setCourse("");
       setDueDate("");
+      onCreated?.(data as Assignment);
+      router.refresh();
       setFeedback({
         type: "success",
         message: "Assignment added successfully.",
       });
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Something went wrong while saving the assignment.";
+      const message = getErrorMessage(
+        error,
+        "Something went wrong while saving the assignment.",
+      );
 
       setFeedback({ type: "error", message });
     } finally {
